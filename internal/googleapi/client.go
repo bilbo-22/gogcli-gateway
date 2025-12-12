@@ -2,6 +2,7 @@ package googleapi
 
 import (
 	"context"
+	"time"
 
 	"github.com/99designs/keyring"
 	"golang.org/x/oauth2"
@@ -12,6 +13,8 @@ import (
 	"github.com/steipete/gogcli/internal/googleauth"
 	"github.com/steipete/gogcli/internal/secrets"
 )
+
+const defaultHTTPTimeout = 30 * time.Second
 
 func tokenSourceForAccount(ctx context.Context, service googleauth.Service, email string) (oauth2.TokenSource, error) {
 	creds, err := config.ReadClientCredentials()
@@ -71,7 +74,9 @@ func optionsForAccount(ctx context.Context, service googleauth.Service, email st
 	if err != nil {
 		return nil, err
 	}
-	return []option.ClientOption{option.WithTokenSource(ts)}, nil
+	c := oauth2.NewClient(ctx, ts)
+	c.Timeout = defaultHTTPTimeout
+	return []option.ClientOption{option.WithHTTPClient(c)}, nil
 }
 
 func optionsForAccountScopes(ctx context.Context, serviceLabel string, email string, scopes []string) ([]option.ClientOption, error) {
@@ -83,5 +88,7 @@ func optionsForAccountScopes(ctx context.Context, serviceLabel string, email str
 	if err != nil {
 		return nil, err
 	}
-	return []option.ClientOption{option.WithTokenSource(ts)}, nil
+	c := oauth2.NewClient(ctx, ts)
+	c.Timeout = defaultHTTPTimeout
+	return []option.ClientOption{option.WithHTTPClient(c)}, nil
 }
