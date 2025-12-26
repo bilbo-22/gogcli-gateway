@@ -16,6 +16,7 @@
 ### Fixed
 
 - Gmail: `gog gmail attachment` download now works reliably; avoid re-fetching payload for filename inference and accept padded base64 responses.
+- Sheets: avoid flag collision with global `--json`; values input flag is now `--values-json` for `sheets update|append`.
 
 ### Changed
 

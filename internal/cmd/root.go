@@ -124,7 +124,7 @@ func Execute(args []string) error {
 
 	root.SetArgs(args)
 	root.PersistentFlags().StringVar(&flags.Color, "color", flags.Color, "Color output: auto|always|never")
-	root.PersistentFlags().StringVar(&flags.Account, "account", "", "Account email for API commands (gmail/calendar/drive/contacts/tasks/people/sheets)")
+	root.PersistentFlags().StringVar(&flags.Account, "account", "", "Account email for API commands (gmail/calendar/drive/docs/slides/contacts/tasks/people/sheets)")
 	root.PersistentFlags().BoolVar(&flags.JSON, "json", flags.JSON, "Output JSON to stdout (best for scripting)")
 	root.PersistentFlags().BoolVar(&flags.Plain, "plain", flags.Plain, "Output stable, parseable text to stdout (TSV; no colors)")
 	root.PersistentFlags().BoolVar(&flags.Force, "force", false, "Skip confirmations for destructive commands")

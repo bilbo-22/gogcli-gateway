@@ -129,12 +129,12 @@ Values can be provided as:
 1. Command line args (comma-separated rows, pipe-separated cells):
    gog sheets update ID 'A1' 'a|b|c,d|e|f'  (2 rows, 3 cols each)
 
-2. JSON via --json flag:
-   gog sheets update ID 'A1' --json '[["a","b"],["c","d"]]'
+2. JSON via --values-json flag:
+   gog sheets update ID 'A1' --values-json '[["a","b"],["c","d"]]'
 
 Examples:
   gog sheets update 1BxiMVs... 'Sheet1!A1' 'Hello|World'
-  gog sheets update 1BxiMVs... 'Sheet1!A1:B2' --json '[["a","b"],["c","d"]]'`,
+  gog sheets update 1BxiMVs... 'Sheet1!A1:B2' --values-json '[["a","b"],["c","d"]]'`,
 		Args: cobra.MinimumNArgs(2),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			u := ui.FromContext(cmd.Context())
@@ -165,7 +165,7 @@ Examples:
 					values = append(values, rowData)
 				}
 			} else {
-				return fmt.Errorf("provide values as args or via --json")
+				return fmt.Errorf("provide values as args or via --values-json")
 			}
 
 			svc, err := newSheetsService(cmd.Context(), account)
@@ -203,7 +203,7 @@ Examples:
 	}
 
 	cmd.Flags().StringVar(&valueInputOption, "input", "USER_ENTERED", "Value input option: RAW or USER_ENTERED")
-	cmd.Flags().StringVar(&jsonValues, "json", "", "Values as JSON 2D array")
+	cmd.Flags().StringVar(&jsonValues, "values-json", "", "Values as JSON 2D array")
 	return cmd
 }
 
@@ -221,7 +221,7 @@ Values format same as 'update' command.
 
 Examples:
   gog sheets append 1BxiMVs... 'Sheet1!A:C' 'val1|val2|val3'
-  gog sheets append 1BxiMVs... 'Sheet1!A:C' --json '[["a","b","c"]]'`,
+  gog sheets append 1BxiMVs... 'Sheet1!A:C' --values-json '[["a","b","c"]]'`,
 		Args: cobra.MinimumNArgs(2),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			u := ui.FromContext(cmd.Context())
@@ -251,7 +251,7 @@ Examples:
 					values = append(values, rowData)
 				}
 			} else {
-				return fmt.Errorf("provide values as args or via --json")
+				return fmt.Errorf("provide values as args or via --values-json")
 			}
 
 			svc, err := newSheetsService(cmd.Context(), account)
@@ -293,7 +293,7 @@ Examples:
 
 	cmd.Flags().StringVar(&valueInputOption, "input", "USER_ENTERED", "Value input option: RAW or USER_ENTERED")
 	cmd.Flags().StringVar(&insertDataOption, "insert", "", "Insert data option: OVERWRITE or INSERT_ROWS")
-	cmd.Flags().StringVar(&jsonValues, "json", "", "Values as JSON 2D array")
+	cmd.Flags().StringVar(&jsonValues, "values-json", "", "Values as JSON 2D array")
 	return cmd
 }
 
