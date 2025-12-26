@@ -21,7 +21,8 @@ func TestExecute_GmailAttachment_OutPath_JSON(t *testing.T) {
 	t.Cleanup(func() { newGmailService = origNew })
 
 	var attachmentCalls int32
-	attachmentData := []byte("abc")
+	// 2 bytes => base64 has padding; exercises padded-base64 fallback decode path.
+	attachmentData := []byte("ab")
 	attachmentEncoded := base64.URLEncoding.EncodeToString(attachmentData)
 
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -108,7 +109,8 @@ func TestExecute_GmailAttachment_NameOverride_ConfigDir_JSON(t *testing.T) {
 	origNew := newGmailService
 	t.Cleanup(func() { newGmailService = origNew })
 
-	attachmentData := []byte("abc")
+	// Keep this unpadded base64url variant working too.
+	attachmentData := []byte("ab")
 	attachmentEncoded := base64.RawURLEncoding.EncodeToString(attachmentData)
 
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
