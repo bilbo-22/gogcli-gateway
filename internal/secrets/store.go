@@ -43,9 +43,10 @@ const (
 )
 
 var (
-	errMissingEmail        = errors.New("missing email")
-	errMissingRefreshToken = errors.New("missing refresh token")
-	errNoTTY               = errors.New("no TTY available for keyring file backend password prompt")
+	errMissingEmail          = errors.New("missing email")
+	errMissingRefreshToken   = errors.New("missing refresh token")
+	errNoTTY                 = errors.New("no TTY available for keyring file backend password prompt")
+	errInvalidKeyringBackend = errors.New("invalid keyring backend")
 )
 
 func allowedBackendsFromEnv() ([]keyring.BackendType, error) {
@@ -57,7 +58,7 @@ func allowedBackendsFromEnv() ([]keyring.BackendType, error) {
 	case "file":
 		return []keyring.BackendType{keyring.FileBackend}, nil
 	default:
-		return nil, fmt.Errorf("invalid %s (expected auto, keychain, or file)", keyringBackendEnv)
+		return nil, fmt.Errorf("%w: %s (expected auto, keychain, or file)", errInvalidKeyringBackend, keyringBackendEnv)
 	}
 }
 
@@ -280,10 +281,12 @@ func EnsureKeychainAccess() error {
 			strings.Contains(errStr, "interaction not allowed") {
 			return fmt.Errorf("%w\n\nTo unlock manually, run:\n  security unlock-keychain ~/Library/Keychains/login.keychain-db", ErrKeychainLocked)
 		}
-		return err
+
+		return fmt.Errorf("keychain access check failed: %w", err)
 	}
 
 	_ = ks.ring.Remove(testKey)
+
 	return nil
 }
 
