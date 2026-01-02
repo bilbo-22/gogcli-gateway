@@ -266,8 +266,8 @@ func (c *AuthTokensImportCmd) Run(ctx context.Context) error {
 	}
 
 	// Pre-flight: ensure keychain is accessible before storing token
-	if err := ensureKeychainAccess(); err != nil {
-		return fmt.Errorf("keychain access: %w", err)
+	if keychainErr := ensureKeychainAccess(); keychainErr != nil {
+		return fmt.Errorf("keychain access: %w", keychainErr)
 	}
 
 	store, err := openSecretsStore()
@@ -334,8 +334,8 @@ func (c *AuthAddCmd) Run(ctx context.Context) error {
 	}
 
 	// Pre-flight: ensure keychain is accessible before starting OAuth
-	if err := ensureKeychainAccess(); err != nil {
-		return fmt.Errorf("keychain access: %w", err)
+	if keychainErr := ensureKeychainAccess(); keychainErr != nil {
+		return fmt.Errorf("keychain access: %w", keychainErr)
 	}
 
 	refreshToken, err := authorizeGoogle(ctx, googleauth.AuthorizeOptions{

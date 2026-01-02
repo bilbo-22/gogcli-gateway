@@ -294,7 +294,7 @@ func (ms *ManageServer) handleOAuthCallback(w http.ResponseWriter, r *http.Reque
 	}
 
 	// Pre-flight: ensure keychain is accessible before storing token
-	if err := secrets.EnsureKeychainAccess(); err != nil {
+	if err := secrets.EnsureKeychainAccess(); err != nil { //nolint:contextcheck // keychain ops don't use context
 		w.WriteHeader(http.StatusInternalServerError)
 		renderErrorPage(w, "Keychain is locked: "+err.Error())
 
