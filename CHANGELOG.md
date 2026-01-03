@@ -4,6 +4,7 @@
 
 - Auth: `gog auth list --check` validates refresh tokens by exchanging for an access token.
 - Secrets: add `GOG_KEYRING_BACKEND={auto|keychain|file}` to force backend (use `file` to avoid Keychain prompts; pair with `GOG_KEYRING_PASSWORD`).
+- Drive: add `gog drive comments` subcommands (#30) — thanks @visionik.
 
 ## 0.4.2 - 2025-12-31
 
