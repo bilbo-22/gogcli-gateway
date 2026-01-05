@@ -17,7 +17,7 @@ import (
 )
 
 func TestListAllCalendarsEvents_JSON(t *testing.T) {
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	srv := httptest.NewServer(withPrimaryCalendar(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch {
 		case strings.Contains(r.URL.Path, "/calendarList") && r.Method == http.MethodGet:
 			w.Header().Set("Content-Type", "application/json")
@@ -63,7 +63,7 @@ func TestListAllCalendarsEvents_JSON(t *testing.T) {
 			http.NotFound(w, r)
 			return
 		}
-	}))
+	})))
 	defer srv.Close()
 
 	svc, err := calendar.NewService(context.Background(),

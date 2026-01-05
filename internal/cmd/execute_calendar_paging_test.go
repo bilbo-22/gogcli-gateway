@@ -16,7 +16,7 @@ func TestExecute_CalendarCalendars_MaxAndPage_JSON(t *testing.T) {
 	origNew := newCalendarService
 	t.Cleanup(func() { newCalendarService = origNew })
 
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	srv := httptest.NewServer(withPrimaryCalendar(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if !(strings.Contains(r.URL.Path, "calendarList") && r.Method == http.MethodGet) {
 			http.NotFound(w, r)
 			return
@@ -34,7 +34,7 @@ func TestExecute_CalendarCalendars_MaxAndPage_JSON(t *testing.T) {
 			},
 			"nextPageToken": "npt",
 		})
-	}))
+	})))
 	defer srv.Close()
 
 	svc, err := calendar.NewService(context.Background(),
@@ -79,7 +79,7 @@ func TestExecute_CalendarAcl_MaxAndPage_JSON(t *testing.T) {
 	origNew := newCalendarService
 	t.Cleanup(func() { newCalendarService = origNew })
 
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	srv := httptest.NewServer(withPrimaryCalendar(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if !(strings.Contains(r.URL.Path, "/calendars/c1/acl") && r.Method == http.MethodGet) {
 			http.NotFound(w, r)
 			return
@@ -97,7 +97,7 @@ func TestExecute_CalendarAcl_MaxAndPage_JSON(t *testing.T) {
 			},
 			"nextPageToken": "npt2",
 		})
-	}))
+	})))
 	defer srv.Close()
 
 	svc, err := calendar.NewService(context.Background(),

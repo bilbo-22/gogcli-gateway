@@ -22,8 +22,11 @@ type conflict struct {
 }
 
 type CalendarConflictsCmd struct {
-	From      string `name:"from" help:"Start time (RFC3339; default: now)"`
-	To        string `name:"to" help:"End time (RFC3339; default: +7d)"`
+	From      string `name:"from" help:"Start time (RFC3339, date, or relative: today, tomorrow, monday)"`
+	To        string `name:"to" help:"End time (RFC3339, date, or relative)"`
+	Today     bool   `name:"today" help:"Today only (timezone-aware)"`
+	Week      bool   `name:"week" help:"This week Mon-Sun (timezone-aware)"`
+	Days      int    `name:"days" help:"Next N days (timezone-aware)" default:"0"`
 	Calendars string `name:"calendars" help:"Comma-separated calendar IDs" default:"primary"`
 }
 
@@ -32,17 +35,6 @@ func (c *CalendarConflictsCmd) Run(ctx context.Context, flags *RootFlags) error 
 	account, err := requireAccount(flags)
 	if err != nil {
 		return err
-	}
-
-	now := time.Now().UTC()
-	sevenDaysLater := now.Add(7 * 24 * time.Hour)
-	from := strings.TrimSpace(c.From)
-	to := strings.TrimSpace(c.To)
-	if from == "" {
-		from = now.Format(time.RFC3339)
-	}
-	if to == "" {
-		to = sevenDaysLater.Format(time.RFC3339)
 	}
 
 	calendarIDs := splitCSV(c.Calendars)
@@ -54,6 +46,20 @@ func (c *CalendarConflictsCmd) Run(ctx context.Context, flags *RootFlags) error 
 	if err != nil {
 		return err
 	}
+
+	// Use timezone-aware time resolution
+	timeRange, err := ResolveTimeRange(ctx, svc, TimeRangeFlags{
+		From:  c.From,
+		To:    c.To,
+		Today: c.Today,
+		Week:  c.Week,
+		Days:  c.Days,
+	})
+	if err != nil {
+		return err
+	}
+
+	from, to := timeRange.FormatRFC3339()
 
 	items := make([]*calendar.FreeBusyRequestItem, 0, len(calendarIDs))
 	for _, id := range calendarIDs {

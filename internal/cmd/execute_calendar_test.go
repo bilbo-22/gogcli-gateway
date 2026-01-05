@@ -16,7 +16,7 @@ func TestExecute_CalendarCalendars_JSON(t *testing.T) {
 	origNew := newCalendarService
 	t.Cleanup(func() { newCalendarService = origNew })
 
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	srv := httptest.NewServer(withPrimaryCalendar(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if !(strings.Contains(r.URL.Path, "calendarList") && r.Method == http.MethodGet) {
 			http.NotFound(w, r)
 			return
@@ -28,7 +28,7 @@ func TestExecute_CalendarCalendars_JSON(t *testing.T) {
 				{"id": "c2", "summary": "Two", "accessRole": "reader"},
 			},
 		})
-	}))
+	})))
 	defer srv.Close()
 
 	svc, err := calendar.NewService(context.Background(),

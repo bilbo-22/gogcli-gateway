@@ -16,7 +16,7 @@ func TestExecute_CalendarEvents_Text_WithPaging(t *testing.T) {
 	origNew := newCalendarService
 	t.Cleanup(func() { newCalendarService = origNew })
 
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	srv := httptest.NewServer(withPrimaryCalendar(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch {
 		case strings.Contains(r.URL.Path, "/calendars/c1/events"):
 			w.Header().Set("Content-Type", "application/json")
@@ -31,7 +31,7 @@ func TestExecute_CalendarEvents_Text_WithPaging(t *testing.T) {
 			http.NotFound(w, r)
 			return
 		}
-	}))
+	})))
 	defer srv.Close()
 
 	svc, err := calendar.NewService(context.Background(),
@@ -63,7 +63,7 @@ func TestExecute_CalendarEvents_Text_All(t *testing.T) {
 	origNew := newCalendarService
 	t.Cleanup(func() { newCalendarService = origNew })
 
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	srv := httptest.NewServer(withPrimaryCalendar(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch {
 		case strings.Contains(r.URL.Path, "/users/me/calendarList"):
 			w.Header().Set("Content-Type", "application/json")
@@ -90,7 +90,7 @@ func TestExecute_CalendarEvents_Text_All(t *testing.T) {
 			http.NotFound(w, r)
 			return
 		}
-	}))
+	})))
 	defer srv.Close()
 
 	svc, err := calendar.NewService(context.Background(),

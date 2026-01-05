@@ -16,7 +16,7 @@ func TestCalendarSearchCmd_JSON(t *testing.T) {
 	origNew := newCalendarService
 	t.Cleanup(func() { newCalendarService = origNew })
 
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	srv := httptest.NewServer(withPrimaryCalendar(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if strings.Contains(r.URL.Path, "/events") && r.Method == http.MethodGet {
 			// Verify query parameter is set
 			q := r.URL.Query().Get("q")
@@ -44,7 +44,7 @@ func TestCalendarSearchCmd_JSON(t *testing.T) {
 			return
 		}
 		http.NotFound(w, r)
-	}))
+	})))
 	defer srv.Close()
 
 	svc, err := calendar.NewService(context.Background(),
@@ -93,7 +93,7 @@ func TestCalendarSearchCmd_NoResults(t *testing.T) {
 	origNew := newCalendarService
 	t.Cleanup(func() { newCalendarService = origNew })
 
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	srv := httptest.NewServer(withPrimaryCalendar(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if strings.Contains(r.URL.Path, "/events") && r.Method == http.MethodGet {
 			w.Header().Set("Content-Type", "application/json")
 			_ = json.NewEncoder(w).Encode(map[string]any{
@@ -102,7 +102,7 @@ func TestCalendarSearchCmd_NoResults(t *testing.T) {
 			return
 		}
 		http.NotFound(w, r)
-	}))
+	})))
 	defer srv.Close()
 
 	svc, err := calendar.NewService(context.Background(),
@@ -143,7 +143,7 @@ func TestCalendarSearchCmd_WithTimeRange(t *testing.T) {
 	origNew := newCalendarService
 	t.Cleanup(func() { newCalendarService = origNew })
 
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	srv := httptest.NewServer(withPrimaryCalendar(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if strings.Contains(r.URL.Path, "/events") && r.Method == http.MethodGet {
 			// Verify time range parameters
 			timeMin := r.URL.Query().Get("timeMin")
@@ -169,7 +169,7 @@ func TestCalendarSearchCmd_WithTimeRange(t *testing.T) {
 			return
 		}
 		http.NotFound(w, r)
-	}))
+	})))
 	defer srv.Close()
 
 	svc, err := calendar.NewService(context.Background(),
@@ -213,7 +213,7 @@ func TestCalendarSearchCmd_TableOutput(t *testing.T) {
 	origNew := newCalendarService
 	t.Cleanup(func() { newCalendarService = origNew })
 
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	srv := httptest.NewServer(withPrimaryCalendar(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if strings.Contains(r.URL.Path, "/events") && r.Method == http.MethodGet {
 			w.Header().Set("Content-Type", "application/json")
 			_ = json.NewEncoder(w).Encode(map[string]any{
@@ -229,7 +229,7 @@ func TestCalendarSearchCmd_TableOutput(t *testing.T) {
 			return
 		}
 		http.NotFound(w, r)
-	}))
+	})))
 	defer srv.Close()
 
 	svc, err := calendar.NewService(context.Background(),
@@ -269,7 +269,7 @@ func TestCalendarSearchCmd_MaxResults(t *testing.T) {
 	origNew := newCalendarService
 	t.Cleanup(func() { newCalendarService = origNew })
 
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	srv := httptest.NewServer(withPrimaryCalendar(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if strings.Contains(r.URL.Path, "/events") && r.Method == http.MethodGet {
 			// Verify maxResults parameter
 			maxResults := r.URL.Query().Get("maxResults")
@@ -297,7 +297,7 @@ func TestCalendarSearchCmd_MaxResults(t *testing.T) {
 			return
 		}
 		http.NotFound(w, r)
-	}))
+	})))
 	defer srv.Close()
 
 	svc, err := calendar.NewService(context.Background(),

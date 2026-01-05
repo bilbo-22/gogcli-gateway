@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"os"
 	"strings"
-	"time"
 
 	"github.com/steipete/gogcli/internal/outfmt"
 	"github.com/steipete/gogcli/internal/ui"
@@ -129,8 +128,12 @@ func (c *CalendarAclCmd) Run(ctx context.Context, flags *RootFlags) error {
 
 type CalendarEventsCmd struct {
 	CalendarID        string `arg:"" name:"calendarId" optional:"" help:"Calendar ID"`
-	From              string `name:"from" help:"Start time (RFC3339; default: now)"`
-	To                string `name:"to" help:"End time (RFC3339; default: +7d)"`
+	From              string `name:"from" help:"Start time (RFC3339, date, or relative: today, tomorrow, monday)"`
+	To                string `name:"to" help:"End time (RFC3339, date, or relative)"`
+	Today             bool   `name:"today" help:"Today only (timezone-aware)"`
+	Tomorrow          bool   `name:"tomorrow" help:"Tomorrow only (timezone-aware)"`
+	Week              bool   `name:"week" help:"This week Mon-Sun (timezone-aware)"`
+	Days              int    `name:"days" help:"Next N days (timezone-aware)" default:"0"`
 	Max               int64  `name:"max" aliases:"limit" help:"Max results" default:"10"`
 	Page              string `name:"page" help:"Page token"`
 	Query             string `name:"query" help:"Free text search"`
@@ -153,21 +156,25 @@ func (c *CalendarEventsCmd) Run(ctx context.Context, flags *RootFlags) error {
 		return usage("calendarId not allowed with --all flag")
 	}
 
-	now := time.Now().UTC()
-	oneWeekLater := now.Add(7 * 24 * time.Hour)
-	from := strings.TrimSpace(c.From)
-	to := strings.TrimSpace(c.To)
-	if from == "" {
-		from = now.Format(time.RFC3339)
-	}
-	if to == "" {
-		to = oneWeekLater.Format(time.RFC3339)
-	}
-
 	svc, err := newCalendarService(ctx, account)
 	if err != nil {
 		return err
 	}
+
+	// Use timezone-aware time resolution
+	timeRange, err := ResolveTimeRange(ctx, svc, TimeRangeFlags{
+		From:     c.From,
+		To:       c.To,
+		Today:    c.Today,
+		Tomorrow: c.Tomorrow,
+		Week:     c.Week,
+		Days:     c.Days,
+	})
+	if err != nil {
+		return err
+	}
+
+	from, to := timeRange.FormatRFC3339()
 
 	if c.All {
 		return listAllCalendarsEvents(ctx, svc, from, to, c.Max, c.Page, c.Query, c.PrivatePropFilter, c.SharedPropFilter, c.Fields)

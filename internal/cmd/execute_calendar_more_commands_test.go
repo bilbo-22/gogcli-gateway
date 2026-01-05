@@ -19,7 +19,7 @@ func TestExecute_CalendarMoreCommands_JSON(t *testing.T) {
 	const calendarID = "c1"
 	const eventID = "e1"
 
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	srv := httptest.NewServer(withPrimaryCalendar(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		path := r.URL.Path
 		switch {
 		case strings.Contains(path, "/calendars/"+calendarID+"/acl") && r.Method == http.MethodGet:
@@ -79,7 +79,7 @@ func TestExecute_CalendarMoreCommands_JSON(t *testing.T) {
 			http.NotFound(w, r)
 			return
 		}
-	}))
+	})))
 	defer srv.Close()
 
 	svc, err := calendar.NewService(context.Background(),
