@@ -70,15 +70,19 @@ func ResolveKeyringBackendInfo() (KeyringBackendInfo, error) {
 		return KeyringBackendInfo{}, fmt.Errorf("read config: %w", err)
 	}
 
-	if cfg.KeyringBackend != "" {
-		return KeyringBackendInfo{Value: cfg.KeyringBackend, Source: keyringBackendSourceConfig}, nil
+	if v := strings.TrimSpace(cfg.KeyringBackend); v != "" {
+		return KeyringBackendInfo{Value: strings.ToLower(v), Source: keyringBackendSourceConfig}, nil
 	}
 
 	return KeyringBackendInfo{Value: "auto", Source: keyringBackendSourceDefault}, nil
 }
 
 func allowedBackends(info KeyringBackendInfo) ([]keyring.BackendType, error) {
-	switch info.Value {
+	raw := strings.TrimSpace(info.Value)
+
+	v := strings.ToLower(raw)
+
+	switch v {
 	case "", "auto":
 		return nil, nil
 	case "keychain":
@@ -86,7 +90,7 @@ func allowedBackends(info KeyringBackendInfo) ([]keyring.BackendType, error) {
 	case "file":
 		return []keyring.BackendType{keyring.FileBackend}, nil
 	default:
-		return nil, fmt.Errorf("%w: %q (expected auto, keychain, or file)", errInvalidKeyringBackend, info.Value)
+		return nil, fmt.Errorf("%w: %q (expected auto, keychain, or file)", errInvalidKeyringBackend, raw)
 	}
 }
 

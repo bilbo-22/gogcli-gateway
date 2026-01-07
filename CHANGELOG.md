@@ -9,6 +9,7 @@
 - Auth: OAuth browser flow now finishes immediately after callback (no 30s “stuck” delay).
 - Homebrew: tap now installs GitHub release binaries (macOS) to reduce Keychain prompt churn.
 - Secrets: add `GOG_KEYRING_BACKEND={auto|keychain|file}` to force backend (use `file` to avoid Keychain prompts; pair with `GOG_KEYRING_PASSWORD`).
+- Secrets: normalize keyring backend values (trim/case-insensitive) + add coverage (#26) — thanks @salmonumbrella.
 - Sheets: `sheets update|append --copy-validation-from ...` copies data validation onto written cells (#29) — thanks @mahmoudashraf93.
 - Docs: explain macOS Keychain prompts and backend options.
 - DX: remove pnpm wrapper; use `make gog`.
