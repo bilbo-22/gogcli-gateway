@@ -2,10 +2,19 @@
 
 package tracking
 
-import "testing"
+import (
+	"os"
+	"strings"
+	"testing"
+)
 
 func TestIntegrationEncryptDecryptWithWorker(t *testing.T) {
-	cfg, err := LoadConfig()
+	account := strings.TrimSpace(os.Getenv("GOG_IT_ACCOUNT"))
+	if account == "" {
+		t.Skip("set GOG_IT_ACCOUNT to run integration test")
+	}
+
+	cfg, err := LoadConfig(account)
 	if err != nil || !cfg.IsConfigured() {
 		t.Skip("Tracking not configured, skipping integration test")
 	}

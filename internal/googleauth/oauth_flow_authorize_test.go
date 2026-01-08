@@ -163,6 +163,51 @@ func TestAuthorize_Manual_Success_NoNewline(t *testing.T) {
 	}
 }
 
+func TestAuthorize_Manual_CancelEOF(t *testing.T) {
+	origRead := readClientCredentials
+	origEndpoint := oauthEndpoint
+	origState := randomStateFn
+
+	t.Cleanup(func() {
+		readClientCredentials = origRead
+		oauthEndpoint = origEndpoint
+		randomStateFn = origState
+	})
+
+	readClientCredentials = func() (config.ClientCredentials, error) {
+		return config.ClientCredentials{ClientID: "id", ClientSecret: "secret"}, nil
+	}
+	randomStateFn = func() (string, error) { return "state123", nil }
+
+	tokenSrv := newTokenServer(t)
+	defer tokenSrv.Close()
+	oauthEndpoint = oauth2EndpointForTest(tokenSrv.URL)
+
+	origStdin := os.Stdin
+
+	t.Cleanup(func() { os.Stdin = origStdin })
+
+	r, w, err := os.Pipe()
+	if err != nil {
+		t.Fatalf("pipe: %v", err)
+	}
+	os.Stdin = r
+	_ = w.Close()
+
+	_, err = Authorize(context.Background(), AuthorizeOptions{
+		Scopes:  []string{"s1"},
+		Manual:  true,
+		Timeout: 2 * time.Second,
+	})
+	if err == nil {
+		t.Fatalf("expected error")
+	}
+
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("expected context.Canceled, got: %v", err)
+	}
+}
+
 func TestAuthorize_Manual_StateMismatch(t *testing.T) {
 	origRead := readClientCredentials
 	origEndpoint := oauthEndpoint

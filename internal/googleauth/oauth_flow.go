@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"html/template"
+	"io"
 	"net"
 	"net/http"
 	"net/url"
@@ -99,10 +100,12 @@ func Authorize(ctx context.Context, opts AuthorizeOptions) (string, error) {
 		fmt.Fprintln(os.Stderr, "Copy the URL from your browser's address bar and paste it here.")
 		fmt.Fprintln(os.Stderr)
 
-		fmt.Fprint(os.Stderr, "Paste redirect URL (Enter or Ctrl-D): ")
-		line, readErr := input.ReadLine(os.Stdin)
-
+		line, readErr := input.PromptLine(ctx, "Paste redirect URL (Enter or Ctrl-D): ")
 		if readErr != nil && !errors.Is(readErr, os.ErrClosed) {
+			if errors.Is(readErr, io.EOF) {
+				return "", fmt.Errorf("authorization canceled: %w", context.Canceled)
+			}
+
 			return "", fmt.Errorf("read redirect url: %w", readErr)
 		}
 		line = strings.TrimSpace(line)

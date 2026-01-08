@@ -29,6 +29,7 @@ type GmailSendCmd struct {
 	Attach           []string `name:"attach" help:"Attachment file path (repeatable)"`
 	From             string   `name:"from" help:"Send from this email address (must be a verified send-as alias)"`
 	Track            bool     `name:"track" help:"Enable open tracking (requires tracking setup)"`
+	TrackSplit       bool     `name:"track-split" help:"Send tracked messages separately per recipient"`
 }
 
 func (c *GmailSendCmd) Run(ctx context.Context, flags *RootFlags) error {
@@ -59,6 +60,9 @@ func (c *GmailSendCmd) Run(ctx context.Context, flags *RootFlags) error {
 	}
 	if strings.TrimSpace(c.Body) == "" && strings.TrimSpace(c.BodyHTML) == "" {
 		return usage("required: --body or --body-html")
+	}
+	if c.TrackSplit && !c.Track {
+		return usage("--track-split requires --track")
 	}
 
 	svc, err := newGmailService(ctx, account)
@@ -121,84 +125,183 @@ func (c *GmailSendCmd) Run(ctx context.Context, flags *RootFlags) error {
 	}
 
 	// Handle tracking
-	var trackingID string
-	htmlBody := c.BodyHTML
+	var trackingCfg *tracking.Config
 	if c.Track {
 		totalRecipients := len(toRecipients) + len(ccRecipients) + len(bccRecipients)
-		if totalRecipients != 1 {
-			return usage("--track requires exactly 1 recipient (no cc/bcc)")
+		if totalRecipients != 1 && !c.TrackSplit {
+			return usage("--track requires exactly 1 recipient (no cc/bcc); use --track-split for per-recipient sends")
 		}
 
-		trackingCfg, cfgErr := tracking.LoadConfig()
-		if cfgErr != nil {
-			return fmt.Errorf("load tracking config: %w", cfgErr)
+		trackingCfg, err = tracking.LoadConfig(account)
+		if err != nil {
+			return fmt.Errorf("load tracking config: %w", err)
 		}
 		if !trackingCfg.IsConfigured() {
 			return fmt.Errorf("tracking not configured; run 'gog gmail track setup' first")
 		}
-		if strings.TrimSpace(htmlBody) == "" {
+		if strings.TrimSpace(c.BodyHTML) == "" {
 			return fmt.Errorf("--track requires --body-html (pixel must be in HTML)")
 		}
+	}
 
-		// Use first resolved recipient for tracking
-		firstRecipient := toRecipients[0]
-		pixelURL, blob, pixelErr := tracking.GeneratePixelURL(trackingCfg, strings.TrimSpace(firstRecipient), c.Subject)
-		if pixelErr != nil {
-			return fmt.Errorf("generate tracking pixel: %w", pixelErr)
+	type sendBatch struct {
+		To                []string
+		Cc                []string
+		Bcc               []string
+		TrackingRecipient string
+	}
+
+	batches := make([]sendBatch, 0, 1)
+	if c.Track && c.TrackSplit && (len(toRecipients)+len(ccRecipients)+len(bccRecipients) > 1) {
+		recipients := append(append(append([]string{}, toRecipients...), ccRecipients...), bccRecipients...)
+		recipients = deduplicateAddresses(recipients)
+		for _, recipient := range recipients {
+			batches = append(batches, sendBatch{
+				To:                []string{recipient},
+				TrackingRecipient: recipient,
+			})
 		}
-		trackingID = blob
-
-		// Inject pixel into HTML body (prefer before </body> / </html>)
-		pixelHTML := tracking.GeneratePixelHTML(pixelURL)
-		htmlBody = injectTrackingPixelHTML(htmlBody, pixelHTML)
+	} else {
+		trackingRecipient := ""
+		if len(toRecipients) > 0 {
+			trackingRecipient = toRecipients[0]
+		}
+		batches = append(batches, sendBatch{
+			To:                toRecipients,
+			Cc:                ccRecipients,
+			Bcc:               bccRecipients,
+			TrackingRecipient: trackingRecipient,
+		})
 	}
 
-	raw, err := buildRFC822(mailOptions{
-		From:        fromAddr,
-		To:          toRecipients,
-		Cc:          ccRecipients,
-		Bcc:         bccRecipients,
-		ReplyTo:     c.ReplyTo,
-		Subject:     c.Subject,
-		Body:        c.Body,
-		BodyHTML:    htmlBody,
-		InReplyTo:   replyInfo.InReplyTo,
-		References:  replyInfo.References,
-		Attachments: atts,
-	})
-	if err != nil {
-		return err
+	type sendResult struct {
+		To         string
+		MessageID  string
+		ThreadID   string
+		TrackingID string
 	}
 
-	msg := &gmail.Message{
-		Raw: base64.RawURLEncoding.EncodeToString(raw),
-	}
-	if replyInfo.ThreadID != "" {
-		msg.ThreadId = replyInfo.ThreadID
+	results := make([]sendResult, 0, len(batches))
+	for _, batch := range batches {
+		htmlBody := c.BodyHTML
+		trackingID := ""
+		if c.Track {
+			recipient := strings.TrimSpace(batch.TrackingRecipient)
+			if recipient == "" && len(batch.To) > 0 {
+				recipient = strings.TrimSpace(batch.To[0])
+			}
+			pixelURL, blob, pixelErr := tracking.GeneratePixelURL(trackingCfg, recipient, c.Subject)
+			if pixelErr != nil {
+				return fmt.Errorf("generate tracking pixel: %w", pixelErr)
+			}
+			trackingID = blob
+
+			// Inject pixel into HTML body (prefer before </body> / </html>)
+			pixelHTML := tracking.GeneratePixelHTML(pixelURL)
+			htmlBody = injectTrackingPixelHTML(htmlBody, pixelHTML)
+		}
+
+		raw, err := buildRFC822(mailOptions{
+			From:        fromAddr,
+			To:          batch.To,
+			Cc:          batch.Cc,
+			Bcc:         batch.Bcc,
+			ReplyTo:     c.ReplyTo,
+			Subject:     c.Subject,
+			Body:        c.Body,
+			BodyHTML:    htmlBody,
+			InReplyTo:   replyInfo.InReplyTo,
+			References:  replyInfo.References,
+			Attachments: atts,
+		})
+		if err != nil {
+			return err
+		}
+
+		msg := &gmail.Message{
+			Raw: base64.RawURLEncoding.EncodeToString(raw),
+		}
+		if replyInfo.ThreadID != "" {
+			msg.ThreadId = replyInfo.ThreadID
+		}
+
+		sent, err := svc.Users.Messages.Send("me", msg).Context(ctx).Do()
+		if err != nil {
+			return err
+		}
+
+		resultRecipient := ""
+		if batch.TrackingRecipient != "" {
+			resultRecipient = batch.TrackingRecipient
+		} else if len(batch.To) > 0 {
+			resultRecipient = batch.To[0]
+		}
+		results = append(results, sendResult{
+			To:         resultRecipient,
+			MessageID:  sent.Id,
+			ThreadID:   sent.ThreadId,
+			TrackingID: trackingID,
+		})
 	}
 
-	sent, err := svc.Users.Messages.Send("me", msg).Context(ctx).Do()
-	if err != nil {
-		return err
-	}
 	if outfmt.IsJSON(ctx) {
-		resp := map[string]any{
-			"messageId": sent.Id,
-			"threadId":  sent.ThreadId,
-			"from":      fromAddr,
+		if len(results) == 1 {
+			resp := map[string]any{
+				"messageId": results[0].MessageID,
+				"threadId":  results[0].ThreadID,
+				"from":      fromAddr,
+			}
+			if results[0].TrackingID != "" {
+				resp["tracking_id"] = results[0].TrackingID
+			}
+			return outfmt.WriteJSON(os.Stdout, resp)
 		}
-		if trackingID != "" {
-			resp["tracking_id"] = trackingID
+
+		items := make([]map[string]any, 0, len(results))
+		for _, r := range results {
+			item := map[string]any{
+				"messageId": r.MessageID,
+				"threadId":  r.ThreadID,
+				"from":      fromAddr,
+			}
+			if r.To != "" {
+				item["to"] = r.To
+			}
+			if r.TrackingID != "" {
+				item["tracking_id"] = r.TrackingID
+			}
+			items = append(items, item)
 		}
-		return outfmt.WriteJSON(os.Stdout, resp)
+		return outfmt.WriteJSON(os.Stdout, map[string]any{"messages": items})
 	}
-	u.Out().Printf("message_id\t%s", sent.Id)
-	if sent.ThreadId != "" {
-		u.Out().Printf("thread_id\t%s", sent.ThreadId)
+
+	if len(results) == 1 {
+		u.Out().Printf("message_id\t%s", results[0].MessageID)
+		if results[0].ThreadID != "" {
+			u.Out().Printf("thread_id\t%s", results[0].ThreadID)
+		}
+		if results[0].TrackingID != "" {
+			u.Out().Printf("tracking_id\t%s", results[0].TrackingID)
+		}
+		return nil
 	}
-	if trackingID != "" {
-		u.Out().Printf("tracking_id\t%s", trackingID)
+
+	for i, r := range results {
+		if i > 0 {
+			u.Out().Println("")
+		}
+		if r.To != "" {
+			u.Out().Printf("to\t%s", r.To)
+		}
+		u.Out().Printf("message_id\t%s", r.MessageID)
+		if r.ThreadID != "" {
+			u.Out().Printf("thread_id\t%s", r.ThreadID)
+		}
+		if r.TrackingID != "" {
+			u.Out().Printf("tracking_id\t%s", r.TrackingID)
+		}
 	}
+
 	return nil
 }
 

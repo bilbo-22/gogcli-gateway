@@ -67,27 +67,31 @@ async function handlePixel(request: Request, env: Env, path: string): Promise<Re
   const openedAt = new Date().toISOString();
 
   // Log to D1
-  await env.DB.prepare(`
-    INSERT INTO opens (
-      tracking_id, recipient, subject_hash, sent_at, opened_at,
-      ip, user_agent, country, region, city, timezone,
-      is_bot, bot_type
-    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-  `).bind(
-    blob,
-    payload.r,
-    payload.s,
-    new Date(sentAt).toISOString(),
-    openedAt,
-    ip,
-    userAgent,
-    cf.country || null,
-    cf.region || null,
-    cf.city || null,
-    cf.timezone || null,
-    isBot ? 1 : 0,
-    botType
-  ).run();
+  try {
+    await env.DB.prepare(`
+      INSERT INTO opens (
+        tracking_id, recipient, subject_hash, sent_at, opened_at,
+        ip, user_agent, country, region, city, timezone,
+        is_bot, bot_type
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    `).bind(
+      blob,
+      payload.r,
+      payload.s,
+      new Date(sentAt).toISOString(),
+      openedAt,
+      ip,
+      userAgent,
+      cf.country || null,
+      cf.region || null,
+      cf.city || null,
+      cf.timezone || null,
+      isBot ? 1 : 0,
+      botType
+    ).run();
+  } catch (error) {
+    console.error('Failed to record open:', error);
+  }
 
   return pixelResponse();
 }

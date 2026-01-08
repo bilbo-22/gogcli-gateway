@@ -13,8 +13,12 @@ type GmailTrackStatusCmd struct{}
 
 func (c *GmailTrackStatusCmd) Run(ctx context.Context, flags *RootFlags) error {
 	u := ui.FromContext(ctx)
+	account, err := requireAccount(flags)
+	if err != nil {
+		return err
+	}
 
-	cfg, err := tracking.LoadConfig()
+	cfg, err := tracking.LoadConfig(account)
 	if err != nil {
 		return fmt.Errorf("load config: %w", err)
 	}
@@ -23,6 +27,7 @@ func (c *GmailTrackStatusCmd) Run(ctx context.Context, flags *RootFlags) error {
 	if path != "" {
 		u.Out().Printf("config_path\t%s", path)
 	}
+	u.Out().Printf("account\t%s", account)
 
 	if !cfg.IsConfigured() {
 		u.Out().Printf("configured\tfalse")
@@ -31,6 +36,15 @@ func (c *GmailTrackStatusCmd) Run(ctx context.Context, flags *RootFlags) error {
 
 	u.Out().Printf("configured\ttrue")
 	u.Out().Printf("worker_url\t%s", cfg.WorkerURL)
+	if strings.TrimSpace(cfg.WorkerName) != "" {
+		u.Out().Printf("worker_name\t%s", cfg.WorkerName)
+	}
+	if strings.TrimSpace(cfg.DatabaseName) != "" {
+		u.Out().Printf("database_name\t%s", cfg.DatabaseName)
+	}
+	if strings.TrimSpace(cfg.DatabaseID) != "" {
+		u.Out().Printf("database_id\t%s", cfg.DatabaseID)
+	}
 	u.Out().Printf("admin_configured\t%t", strings.TrimSpace(cfg.AdminKey) != "")
 
 	return nil

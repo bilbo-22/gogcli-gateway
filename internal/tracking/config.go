@@ -2,6 +2,7 @@ package tracking
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -10,16 +11,25 @@ import (
 	"github.com/steipete/gogcli/internal/config"
 )
 
-// Config holds tracking configuration
+var errMissingAccount = errors.New("missing account")
+
+// Config holds tracking configuration for a single account.
 type Config struct {
 	Enabled          bool   `json:"enabled"`
 	WorkerURL        string `json:"worker_url"`
+	WorkerName       string `json:"worker_name,omitempty"`
+	DatabaseName     string `json:"database_name,omitempty"`
+	DatabaseID       string `json:"database_id,omitempty"`
 	SecretsInKeyring bool   `json:"secrets_in_keyring,omitempty"`
 	TrackingKey      string `json:"tracking_key,omitempty"`
 	AdminKey         string `json:"admin_key,omitempty"`
 }
 
-// ConfigPath returns the path to the tracking config file
+type fileConfig struct {
+	Accounts map[string]*Config `json:"accounts,omitempty"`
+}
+
+// ConfigPath returns the path to the tracking config file.
 func ConfigPath() (string, error) {
 	dir, err := config.Dir()
 	if err != nil {
@@ -67,8 +77,13 @@ func readConfigBytes(path string) ([]byte, bool, error) {
 	return nil, false, fmt.Errorf("read legacy tracking config: %w", legacyReadErr)
 }
 
-// LoadConfig loads tracking configuration from disk
-func LoadConfig() (*Config, error) {
+// LoadConfig loads tracking configuration from disk for the specified account.
+func LoadConfig(account string) (*Config, error) {
+	account = normalizeAccount(account)
+	if account == "" {
+		return nil, errMissingAccount
+	}
+
 	path, err := ConfigPath()
 	if err != nil {
 		return nil, err
@@ -83,13 +98,79 @@ func LoadConfig() (*Config, error) {
 		return &Config{Enabled: false}, nil
 	}
 
-	var cfg Config
-	if err := json.Unmarshal(data, &cfg); err != nil {
+	var fileCfg fileConfig
+	if err := json.Unmarshal(data, &fileCfg); err == nil && len(fileCfg.Accounts) > 0 {
+		cfg := fileCfg.Accounts[account]
+		if cfg == nil {
+			return &Config{Enabled: false}, nil
+		}
+
+		return hydrateConfig(account, cfg)
+	}
+
+	var legacy Config
+	if err := json.Unmarshal(data, &legacy); err != nil {
 		return nil, fmt.Errorf("parse tracking config: %w", err)
 	}
 
+	return hydrateConfig(account, &legacy)
+}
+
+// SaveConfig saves tracking configuration to disk for the specified account.
+func SaveConfig(account string, cfg *Config) error {
+	account = normalizeAccount(account)
+	if account == "" {
+		return errMissingAccount
+	}
+
+	path, err := ConfigPath()
+	if err != nil {
+		return err
+	}
+
+	fileCfg := fileConfig{Accounts: map[string]*Config{}}
+	if data, ok, readErr := readConfigBytes(path); readErr == nil && ok {
+		if err := json.Unmarshal(data, &fileCfg); err != nil {
+			return fmt.Errorf("parse tracking config: %w", err)
+		}
+		if fileCfg.Accounts == nil {
+			fileCfg.Accounts = map[string]*Config{}
+		}
+	}
+
+	toSave := *cfg
+	if cfg.SecretsInKeyring {
+		toSave.TrackingKey = ""
+		toSave.AdminKey = ""
+	}
+
+	fileCfg.Accounts[account] = &toSave
+
+	// Ensure directory exists
+	if _, mkErr := config.EnsureDir(); mkErr != nil {
+		return fmt.Errorf("ensure config dir: %w", mkErr)
+	}
+
+	data, err := json.MarshalIndent(fileCfg, "", "  ")
+	if err != nil {
+		return fmt.Errorf("marshal tracking config: %w", err)
+	}
+
+	if writeErr := os.WriteFile(path, data, 0o600); writeErr != nil {
+		return fmt.Errorf("write tracking config: %w", writeErr)
+	}
+
+	return nil
+}
+
+// IsConfigured returns true if tracking is set up.
+func (c *Config) IsConfigured() bool {
+	return c.Enabled && c.WorkerURL != "" && c.TrackingKey != ""
+}
+
+func hydrateConfig(account string, cfg *Config) (*Config, error) {
 	if strings.TrimSpace(cfg.TrackingKey) == "" || strings.TrimSpace(cfg.AdminKey) == "" || cfg.SecretsInKeyring {
-		trackingKey, adminKey, secretErr := LoadSecrets()
+		trackingKey, adminKey, secretErr := LoadSecrets(account)
 		if secretErr != nil {
 			return nil, secretErr
 		}
@@ -103,42 +184,9 @@ func LoadConfig() (*Config, error) {
 		}
 	}
 
-	return &cfg, nil
+	return cfg, nil
 }
 
-// SaveConfig saves tracking configuration to disk
-func SaveConfig(cfg *Config) error {
-	path, err := ConfigPath()
-	if err != nil {
-		return err
-	}
-
-	// Ensure directory exists
-	if _, mkErr := config.EnsureDir(); mkErr != nil {
-		return fmt.Errorf("ensure config dir: %w", mkErr)
-	}
-
-	toSave := cfg
-	if cfg.SecretsInKeyring {
-		s := *cfg
-		s.TrackingKey = ""
-		s.AdminKey = ""
-		toSave = &s
-	}
-
-	data, err := json.MarshalIndent(toSave, "", "  ")
-	if err != nil {
-		return fmt.Errorf("marshal tracking config: %w", err)
-	}
-
-	if writeErr := os.WriteFile(path, data, 0o600); writeErr != nil {
-		return fmt.Errorf("write tracking config: %w", writeErr)
-	}
-
-	return nil
-}
-
-// IsConfigured returns true if tracking is set up
-func (c *Config) IsConfigured() bool {
-	return c.Enabled && c.WorkerURL != "" && c.TrackingKey != ""
+func normalizeAccount(account string) string {
+	return strings.ToLower(strings.TrimSpace(account))
 }

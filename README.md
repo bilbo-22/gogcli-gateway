@@ -328,7 +328,7 @@ Gmail watch (Pub/Sub push):
 Track when recipients open your emails:
 
 ```bash
-# Set up local tracking config (generates keys; follow printed deploy steps)
+# Set up local tracking config (per-account; generates keys; follow printed deploy steps)
 gog gmail track setup --worker-url https://gog-email-tracker.<acct>.workers.dev
 
 # Send with tracking
@@ -344,7 +344,7 @@ gog gmail track status
 
 Docs: `docs/email-tracking.md` (setup/deploy) + `docs/email-tracking-worker.md` (internals).
 
-**Notes:** `--track` requires exactly 1 recipient (no cc/bcc) and an HTML body (`--body-html`). The tracking worker stores IP/user-agent + coarse geo by default.
+**Notes:** `--track` requires exactly 1 recipient (no cc/bcc) and an HTML body (`--body-html`). Use `--track-split` to send per-recipient messages with individual tracking ids. The tracking worker stores IP/user-agent + coarse geo by default.
 
 ### Calendar
 

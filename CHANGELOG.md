@@ -23,6 +23,7 @@
 - Gmail: `gog gmail thread attachments` list/download attachments (#27) — thanks @salmonumbrella.
 - Gmail: `gog gmail thread get --full` shows complete bodies (default truncates) (#25) — thanks @salmonumbrella.
 - Gmail: email open tracking (`gog gmail send --track`, `gog gmail track ...`) via Cloudflare Worker backend (#38) — thanks @salmonumbrella.
+- Gmail: tracking setup is per-account with optional deploy + `--track-split` per-recipient sends (#35) — thanks @salmonumbrella.
 - Gmail: surface List-Unsubscribe links in `gog gmail get`/`thread get` output (#39) — thanks @jverdi.
 - Gmail: ignore stale/duplicate watch pushes (historyId + messageId) and prevent history regressions (#40) — thanks @joargp.
 - Gmail: reorganize `gog gmail --help` into sections and add `gog gmail settings ...` (old subcommands remain available).

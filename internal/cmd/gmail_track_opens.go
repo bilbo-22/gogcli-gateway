@@ -26,8 +26,12 @@ type GmailTrackOpensCmd struct {
 
 func (c *GmailTrackOpensCmd) Run(ctx context.Context, flags *RootFlags) error {
 	u := ui.FromContext(ctx)
+	account, err := requireAccount(flags)
+	if err != nil {
+		return err
+	}
 
-	cfg, err := tracking.LoadConfig()
+	cfg, err := tracking.LoadConfig(account)
 	if err != nil {
 		return fmt.Errorf("load config: %w", err)
 	}

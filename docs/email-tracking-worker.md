@@ -22,17 +22,20 @@ Expected bindings:
 ## Routes (high-level)
 
 - Pixel:
-  - `GET /t/<tracking_id>.png`
-  - Validates/decrypts `tracking_id`, stores an open row, returns a transparent PNG.
+  - `GET /p/<tracking_id>.gif`
+  - Validates/decrypts `tracking_id`, stores an open row, returns a transparent GIF.
+
+- Query:
+  - `GET /q/<tracking_id>`
+  - Returns opens for that tracking id (no auth).
 
 - Admin:
-  - `GET /opens?to=<email>&since=<...>`
-  - `GET /opens/<tracking_id>`
-  - Auth: `Authorization: Bearer <ADMIN_KEY>` (or equivalent, per implementation).
+  - `GET /opens?recipient=<email>&since=<...>`
+  - Auth: `Authorization: Bearer <ADMIN_KEY>`.
 
 ## Schema notes
 
-- Primary key uses `tracking_id` (the encrypted blob) to avoid collisions.
+- `tracking_id` is stored for lookup by tracking id.
 - `opened_at` stored as an ISO string for consistent ordering/comparison.
 
 ## Local dev
@@ -51,4 +54,3 @@ pnpm lint
 pnpm build
 pnpm test
 ```
-

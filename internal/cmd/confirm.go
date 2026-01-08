@@ -11,7 +11,6 @@ import (
 	"golang.org/x/term"
 
 	"github.com/steipete/gogcli/internal/input"
-	"github.com/steipete/gogcli/internal/ui"
 )
 
 func confirmDestructive(ctx context.Context, flags *RootFlags, action string) error {
@@ -25,13 +24,7 @@ func confirmDestructive(ctx context.Context, flags *RootFlags, action string) er
 	}
 
 	prompt := fmt.Sprintf("Proceed to %s? [y/N]: ", action)
-	if u := ui.FromContext(ctx); u != nil {
-		u.Err().Println(prompt)
-	} else {
-		_, _ = fmt.Fprintln(os.Stderr, prompt)
-	}
-
-	line, readErr := input.ReadLine(os.Stdin)
+	line, readErr := input.PromptLine(ctx, prompt)
 	if readErr != nil && !errors.Is(readErr, os.ErrClosed) {
 		if errors.Is(readErr, io.EOF) {
 			return &ExitError{Code: 1, Err: errors.New("cancelled")}

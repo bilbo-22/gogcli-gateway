@@ -15,27 +15,40 @@ func TestConfigRoundTrip(t *testing.T) {
 	t.Setenv("GOG_KEYRING_BACKEND", "file")
 	t.Setenv("GOG_KEYRING_PASSWORD", "test-password")
 
-	if err := SaveSecrets("testkey123", "adminkey456"); err != nil {
+	account := "test@example.com"
+
+	if err := SaveSecrets(account, "testkey123", "adminkey456"); err != nil {
 		t.Fatalf("SaveSecrets failed: %v", err)
 	}
 
 	cfg := &Config{
 		Enabled:          true,
 		WorkerURL:        "https://test.workers.dev",
+		WorkerName:       "gog-email-tracker-test",
+		DatabaseName:     "gog-email-tracker-test",
+		DatabaseID:       "db-id-123",
 		SecretsInKeyring: true,
 	}
 
-	if err := SaveConfig(cfg); err != nil {
+	if err := SaveConfig(account, cfg); err != nil {
 		t.Fatalf("SaveConfig failed: %v", err)
 	}
 
-	loaded, err := LoadConfig()
+	loaded, err := LoadConfig(account)
 	if err != nil {
 		t.Fatalf("LoadConfig failed: %v", err)
 	}
 
 	if loaded.WorkerURL != cfg.WorkerURL {
 		t.Errorf("WorkerURL mismatch: got %q, want %q", loaded.WorkerURL, cfg.WorkerURL)
+	}
+
+	if loaded.WorkerName != cfg.WorkerName {
+		t.Errorf("WorkerName mismatch: got %q, want %q", loaded.WorkerName, cfg.WorkerName)
+	}
+
+	if loaded.DatabaseID != cfg.DatabaseID {
+		t.Errorf("DatabaseID mismatch: got %q, want %q", loaded.DatabaseID, cfg.DatabaseID)
 	}
 
 	if loaded.TrackingKey != "testkey123" {
@@ -71,7 +84,7 @@ func TestLoadConfigMissing(t *testing.T) {
 	t.Setenv("HOME", tmpDir)
 	t.Setenv("XDG_CONFIG_HOME", filepath.Join(tmpDir, "xdg-config"))
 
-	cfg, err := LoadConfig()
+	cfg, err := LoadConfig("missing@example.com")
 	if err != nil {
 		t.Fatalf("LoadConfig failed: %v", err)
 	}
@@ -82,5 +95,25 @@ func TestLoadConfigMissing(t *testing.T) {
 
 	if cfg.IsConfigured() {
 		t.Error("IsConfigured should return false for missing config")
+	}
+}
+
+func TestLoadConfigDifferentAccount(t *testing.T) {
+	tmpDir := t.TempDir()
+	t.Setenv("HOME", tmpDir)
+	t.Setenv("XDG_CONFIG_HOME", filepath.Join(tmpDir, "xdg-config"))
+
+	cfg := &Config{Enabled: true, WorkerURL: "https://test.workers.dev"}
+	if err := SaveConfig("a@example.com", cfg); err != nil {
+		t.Fatalf("SaveConfig failed: %v", err)
+	}
+
+	loaded, err := LoadConfig("b@example.com")
+	if err != nil {
+		t.Fatalf("LoadConfig failed: %v", err)
+	}
+
+	if loaded.Enabled {
+		t.Error("Expected Enabled to be false for missing account config")
 	}
 }

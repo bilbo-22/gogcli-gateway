@@ -92,6 +92,10 @@ func (p *Printer) printf(format string, args ...any) {
 	p.line(fmt.Sprintf(format, args...))
 }
 
+func (p *Printer) Print(msg string) {
+	_, _ = io.WriteString(p.o, msg)
+}
+
 func (p *Printer) Successf(format string, args ...any) {
 	msg := fmt.Sprintf(format, args...)
 	if p.ColorEnabled() {

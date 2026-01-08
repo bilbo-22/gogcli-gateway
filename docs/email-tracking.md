@@ -20,7 +20,7 @@ Privacy note:
 
 ## Setup (local)
 
-Create local tracking config + keys:
+Create per-account tracking config + keys:
 
 ```sh
 gog gmail track setup --worker-url https://gog-email-tracker.<acct>.workers.dev
@@ -28,7 +28,18 @@ gog gmail track setup --worker-url https://gog-email-tracker.<acct>.workers.dev
 
 This writes a local config file containing:
 - `worker_url` (base URL)
-- tracking keys are stored in your keychain/keyring (not in the JSON file)
+- per-account tracking keys are stored in your keychain/keyring (not in the JSON file)
+
+Optional: auto-provision + deploy with wrangler:
+
+```sh
+gog gmail track setup --worker-url https://gog-email-tracker.<acct>.workers.dev --deploy
+```
+
+Flags:
+- `--worker-name`: default `gog-email-tracker-<account>`.
+- `--db-name`: default to worker name.
+- `--worker-dir`: default `internal/tracking/worker`.
 
 Re-run `gog gmail track setup` any time to re-print the current `TRACKING_KEY` / `ADMIN_KEY` values (it’s idempotent unless you pass explicit `--tracking-key` / `--admin-key`).
 
@@ -66,6 +77,19 @@ pnpm exec wrangler deploy
 Tracked email constraints:
 - Exactly **one** recipient (`--to`; no cc/bcc).
 - HTML body required (`--body-html`).
+
+Optional per-recipient sends:
+
+```sh
+gog gmail send \
+  --to a@example.com,b@example.com \
+  --subject "Hello" \
+  --body-html "<p>Hi!</p>" \
+  --track \
+  --track-split
+```
+
+`--track-split` sends separate messages per recipient (no CC/BCC; each message has a unique tracking id).
 
 Example:
 
