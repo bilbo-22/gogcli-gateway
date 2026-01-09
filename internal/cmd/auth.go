@@ -24,6 +24,7 @@ var (
 	startManageServer    = googleauth.StartManageServer
 	checkRefreshToken    = googleauth.CheckRefreshToken
 	ensureKeychainAccess = secrets.EnsureKeychainAccess
+	fetchAuthorizedEmail = googleauth.EmailForRefreshToken
 )
 
 func ensureKeychainAccessIfNeeded() error {
@@ -35,6 +36,10 @@ func ensureKeychainAccessIfNeeded() error {
 		return nil
 	}
 	return ensureKeychainAccess()
+}
+
+func normalizeEmail(value string) string {
+	return strings.ToLower(strings.TrimSpace(value))
 }
 
 type AuthCmd struct {
@@ -337,7 +342,7 @@ func (c *AuthAddCmd) Run(ctx context.Context) error {
 		return fmt.Errorf("no services selected")
 	}
 
-	scopes, err := googleauth.ScopesForServices(services)
+	scopes, err := googleauth.ScopesForManage(services)
 	if err != nil {
 		return err
 	}
@@ -357,6 +362,14 @@ func (c *AuthAddCmd) Run(ctx context.Context) error {
 		return err
 	}
 
+	authorizedEmail, err := fetchAuthorizedEmail(ctx, refreshToken, scopes, 15*time.Second)
+	if err != nil {
+		return fmt.Errorf("fetch authorized email: %w", err)
+	}
+	if normalizeEmail(authorizedEmail) != normalizeEmail(c.Email) {
+		return fmt.Errorf("authorized as %s, expected %s", authorizedEmail, c.Email)
+	}
+
 	store, err := openSecretsStore()
 	if err != nil {
 		return err
@@ -367,8 +380,8 @@ func (c *AuthAddCmd) Run(ctx context.Context) error {
 	}
 	sort.Strings(serviceNames)
 
-	if err := store.SetToken(c.Email, secrets.Token{
-		Email:        c.Email,
+	if err := store.SetToken(authorizedEmail, secrets.Token{
+		Email:        authorizedEmail,
 		Services:     serviceNames,
 		Scopes:       scopes,
 		RefreshToken: refreshToken,
@@ -378,11 +391,11 @@ func (c *AuthAddCmd) Run(ctx context.Context) error {
 	if outfmt.IsJSON(ctx) {
 		return outfmt.WriteJSON(os.Stdout, map[string]any{
 			"stored":   true,
-			"email":    c.Email,
+			"email":    authorizedEmail,
 			"services": serviceNames,
 		})
 	}
-	u.Out().Printf("email\t%s", c.Email)
+	u.Out().Printf("email\t%s", authorizedEmail)
 	u.Out().Printf("services\t%s", strings.Join(serviceNames, ","))
 	return nil
 }

@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"testing"
+	"time"
 
 	"github.com/steipete/gogcli/internal/googleauth"
 	"github.com/steipete/gogcli/internal/secrets"
@@ -13,10 +14,12 @@ func TestExecute_AuthAdd_JSON(t *testing.T) {
 	origOpen := openSecretsStore
 	origAuth := authorizeGoogle
 	origKeychain := ensureKeychainAccess
+	origFetch := fetchAuthorizedEmail
 	t.Cleanup(func() {
 		openSecretsStore = origOpen
 		authorizeGoogle = origAuth
 		ensureKeychainAccess = origKeychain
+		fetchAuthorizedEmail = origFetch
 	})
 
 	ensureKeychainAccess = func() error { return nil }
@@ -30,6 +33,9 @@ func TestExecute_AuthAdd_JSON(t *testing.T) {
 		gotOpts.Services = append([]googleauth.Service{}, opts.Services...)
 		gotOpts.Scopes = append([]string{}, opts.Scopes...)
 		return "rt", nil
+	}
+	fetchAuthorizedEmail = func(context.Context, string, []string, time.Duration) (string, error) {
+		return "a@b.com", nil
 	}
 
 	out := captureStdout(t, func() {

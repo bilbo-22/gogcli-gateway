@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/steipete/gogcli/internal/googleauth"
 	"github.com/steipete/gogcli/internal/outfmt"
@@ -19,10 +20,12 @@ func TestAuthAddCmd_JSON_More(t *testing.T) {
 	origOpen := openSecretsStore
 	origAuth := authorizeGoogle
 	origKeychain := ensureKeychainAccess
+	origFetch := fetchAuthorizedEmail
 	t.Cleanup(func() {
 		openSecretsStore = origOpen
 		authorizeGoogle = origAuth
 		ensureKeychainAccess = origKeychain
+		fetchAuthorizedEmail = origFetch
 	})
 
 	store := newMemSecretsStore()
@@ -32,6 +35,9 @@ func TestAuthAddCmd_JSON_More(t *testing.T) {
 			t.Fatalf("expected services")
 		}
 		return "rt", nil
+	}
+	fetchAuthorizedEmail = func(context.Context, string, []string, time.Duration) (string, error) {
+		return "a@b.com", nil
 	}
 	ensureKeychainAccess = func() error { return nil }
 

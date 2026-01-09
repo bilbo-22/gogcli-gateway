@@ -25,7 +25,7 @@ func newMemSecretsStore() *memSecretsStore {
 	return &memSecretsStore{tokens: make(map[string]secrets.Token)}
 }
 
-func normalizeEmail(s string) string {
+func normalizeEmailTest(s string) string {
 	return strings.ToLower(strings.TrimSpace(s))
 }
 
@@ -39,7 +39,7 @@ func (s *memSecretsStore) Keys() ([]string, error) {
 }
 
 func (s *memSecretsStore) SetToken(email string, tok secrets.Token) error {
-	email = normalizeEmail(email)
+	email = normalizeEmailTest(email)
 	if email == "" {
 		return errors.New("missing email")
 	}
@@ -52,7 +52,7 @@ func (s *memSecretsStore) SetToken(email string, tok secrets.Token) error {
 }
 
 func (s *memSecretsStore) GetToken(email string) (secrets.Token, error) {
-	email = normalizeEmail(email)
+	email = normalizeEmailTest(email)
 	if email == "" {
 		return secrets.Token{}, errors.New("missing email")
 	}
@@ -63,7 +63,7 @@ func (s *memSecretsStore) GetToken(email string) (secrets.Token, error) {
 }
 
 func (s *memSecretsStore) DeleteToken(email string) error {
-	email = normalizeEmail(email)
+	email = normalizeEmailTest(email)
 	if email == "" {
 		return errors.New("missing email")
 	}

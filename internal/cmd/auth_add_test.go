@@ -6,6 +6,7 @@ import (
 	"errors"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/steipete/gogcli/internal/googleauth"
 	"github.com/steipete/gogcli/internal/secrets"
@@ -15,10 +16,12 @@ func TestAuthAddCmd_JSON(t *testing.T) {
 	origAuth := authorizeGoogle
 	origOpen := openSecretsStore
 	origKeychain := ensureKeychainAccess
+	origFetch := fetchAuthorizedEmail
 	t.Cleanup(func() {
 		authorizeGoogle = origAuth
 		openSecretsStore = origOpen
 		ensureKeychainAccess = origKeychain
+		fetchAuthorizedEmail = origFetch
 	})
 
 	ensureKeychainAccess = func() error { return nil }
@@ -30,6 +33,9 @@ func TestAuthAddCmd_JSON(t *testing.T) {
 	authorizeGoogle = func(ctx context.Context, opts googleauth.AuthorizeOptions) (string, error) {
 		gotOpts = opts
 		return "rt", nil
+	}
+	fetchAuthorizedEmail = func(context.Context, string, []string, time.Duration) (string, error) {
+		return "user@example.com", nil
 	}
 
 	out := captureStdout(t, func() {
@@ -80,10 +86,12 @@ func TestAuthAddCmd_KeychainError(t *testing.T) {
 	origAuth := authorizeGoogle
 	origOpen := openSecretsStore
 	origKeychain := ensureKeychainAccess
+	origFetch := fetchAuthorizedEmail
 	t.Cleanup(func() {
 		authorizeGoogle = origAuth
 		openSecretsStore = origOpen
 		ensureKeychainAccess = origKeychain
+		fetchAuthorizedEmail = origFetch
 	})
 
 	// Simulate keychain locked error
@@ -95,6 +103,10 @@ func TestAuthAddCmd_KeychainError(t *testing.T) {
 	authorizeGoogle = func(_ context.Context, _ googleauth.AuthorizeOptions) (string, error) {
 		authCalled = true
 		return "rt", nil
+	}
+	fetchAuthorizedEmail = func(context.Context, string, []string, time.Duration) (string, error) {
+		t.Fatal("fetchAuthorizedEmail should not be called when keychain check fails")
+		return "", nil
 	}
 
 	store := newMemSecretsStore()
@@ -118,10 +130,12 @@ func TestAuthAddCmd_DefaultServices_UserPreset(t *testing.T) {
 	origAuth := authorizeGoogle
 	origOpen := openSecretsStore
 	origKeychain := ensureKeychainAccess
+	origFetch := fetchAuthorizedEmail
 	t.Cleanup(func() {
 		authorizeGoogle = origAuth
 		openSecretsStore = origOpen
 		ensureKeychainAccess = origKeychain
+		fetchAuthorizedEmail = origFetch
 	})
 
 	ensureKeychainAccess = func() error { return nil }
@@ -133,6 +147,9 @@ func TestAuthAddCmd_DefaultServices_UserPreset(t *testing.T) {
 	authorizeGoogle = func(ctx context.Context, opts googleauth.AuthorizeOptions) (string, error) {
 		gotOpts = opts
 		return "rt", nil
+	}
+	fetchAuthorizedEmail = func(context.Context, string, []string, time.Duration) (string, error) {
+		return "user@example.com", nil
 	}
 
 	_ = captureStdout(t, func() {
@@ -177,5 +194,35 @@ func TestAuthAddCmd_KeepRejected(t *testing.T) {
 	}
 	if authorizeCalled {
 		t.Fatalf("authorizeGoogle should not be called")
+	}
+}
+
+func TestAuthAddCmd_EmailMismatch(t *testing.T) {
+	origAuth := authorizeGoogle
+	origOpen := openSecretsStore
+	origKeychain := ensureKeychainAccess
+	origFetch := fetchAuthorizedEmail
+	t.Cleanup(func() {
+		authorizeGoogle = origAuth
+		openSecretsStore = origOpen
+		ensureKeychainAccess = origKeychain
+		fetchAuthorizedEmail = origFetch
+	})
+
+	ensureKeychainAccess = func() error { return nil }
+	openSecretsStore = func() (secrets.Store, error) { return newMemSecretsStore(), nil }
+	authorizeGoogle = func(context.Context, googleauth.AuthorizeOptions) (string, error) {
+		return "rt", nil
+	}
+	fetchAuthorizedEmail = func(context.Context, string, []string, time.Duration) (string, error) {
+		return "actual@example.com", nil
+	}
+
+	err := Execute([]string{"auth", "add", "expected@example.com"})
+	if err == nil {
+		t.Fatalf("expected mismatch error")
+	}
+	if !strings.Contains(err.Error(), "authorized as actual@example.com") {
+		t.Fatalf("unexpected error: %v", err)
 	}
 }
