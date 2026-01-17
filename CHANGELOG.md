@@ -2,30 +2,41 @@
 
 ## 0.7.0 - Unreleased
 
+### Highlights
+
+- Classroom: full command suite (courses, roster, coursework/materials, announcements, topics, invitations, guardians, profiles) plus course URLs. (#73) — thanks @salmonumbrella.
+- Calendar: propose-time command and enterprise event types (Focus Time/Out of Office/Working Location). (#75) — thanks @salmonumbrella.
+- Gmail: attachment details in `gmail get` (humanized sizes + JSON fields). (#83) — thanks @jeanregisser.
+
 ### Added
 
-- Gmail: show attachment info (incl. humanized sizes) for `gmail get` full/metadata output, with JSON `sizeHuman`. (#83) — thanks @jeanregisser.
-- CLI: calendar propose-time, event types, tasks repeat + get, auth aliases, time now, enable-commands, and day-of-week JSON fields. (#75) — thanks @salmonumbrella.
+- Auth: permission upgrade UI in the account manager + missing service icons. (#73) — thanks @salmonumbrella.
+- CLI: auth aliases, `time now`, `--enable-commands` allowlist, and day-of-week JSON fields. (#75) — thanks @salmonumbrella.
+- Tasks: repeat schedules + `tasks get` command. (#75) — thanks @salmonumbrella.
 
 ### Fixed
 
-- Gmail: include `gmail.settings.sharing` scope for filter operations to avoid 403 insufficientPermissions. (#69) — thanks @ryanh-ai.
+- Calendar: propose-time decline sends updates, default events to primary, and improved error guidance. (#75)
 - Gmail: resync on stale history 404s and skip missing message fetches without masking non-404 failures. (#70) — thanks @antons.
+- Gmail: include `gmail.settings.sharing` scope for filter operations to avoid 403 insufficientPermissions. (#69) — thanks @ryanh-ai.
+- Auth: request Gmail settings scopes so settings commands work reliably.
 - Auth: account manager upgrade respects managed services and skips Keep OAuth scopes. (#73) — thanks @salmonumbrella.
-- Classroom: normalize assignee updates + fix grade update masks. (#74) — thanks @salmonumbrella.
-- Classroom: scan pages when filtering coursework/materials by topic. (#73) — thanks @salmonumbrella.
-- CLI: enable shell completions and stop flag suggestions after `--`. (#77) — thanks @salmonumbrella.
-- Timezone: honor `--timezone local` and allow env/config defaults for Gmail + Calendar output. (#79) — thanks @salmonumbrella.
-- Calendar/Tasks: propose-time decline sends updates and repeat-until keeps due time. (#75) — thanks @salmonumbrella.
+- Classroom: normalize assignee updates + fix grade update masks; scan pages when filtering coursework/materials by topic; add leave confirmation. (#73, #74) — thanks @salmonumbrella.
 - Tasks: normalize due dates to RFC3339 so date-only inputs work reliably (including repeat).
+- Timezone: honor `--timezone local` and allow env/config defaults for Gmail + Calendar output. (#79) — thanks @salmonumbrella.
+- CLI: enable shell completions and stop flag suggestions after `--`. (#77) — thanks @salmonumbrella.
 - Groups: friendlier Cloud Identity errors for consumer accounts and missing scopes.
 
 ### Build
 
-- Deps: update Go modules and JS worker dev deps; bump pinned dev tools.
+- Deps: update Go modules and JS worker dev deps; bump pinned dev tools; switch WSL to v5.
 
 ### Tests
 
+- Live: add `scripts/live-test.sh` wrapper and expand smoke coverage across services.
+- Calendar: add integration tests for propose-time.
+- Gmail: add attachment output tests for `gmail get`.
+- Classroom: add integration smoke tests and command coverage.
 - Drive: expand `drive drives` coverage (formatting + query/paging params).
 - Auth: use `net.ListenConfig.Listen` in tests to satisfy newer lint.
 

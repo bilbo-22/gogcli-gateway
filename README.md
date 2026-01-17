@@ -1,17 +1,17 @@
 # 🧭 gogcli — Google in your terminal.
 
-Google in your terminal — CLI for Gmail, Calendar, Classroom, Drive, Docs, Slides, Sheets, Contacts, Tasks, People, Groups (Workspace), and Keep (Workspace-only).
+Fast, script-friendly CLI for Gmail, Calendar, Classroom, Drive, Docs, Slides, Sheets, Contacts, Tasks, People, Groups (Workspace), and Keep (Workspace-only). JSON-first output, multiple accounts, and least-privilege auth built in.
 
 ## Features
 
-- **Gmail** - search threads, send emails, manage labels, drafts, filters, delegation, vacation settings, and watch (Pub/Sub push)
+- **Gmail** - search threads, send emails, view attachments, manage labels/drafts/filters/delegation/vacation settings, history, and watch (Pub/Sub push)
 - **Email tracking** - track opens for `gog gmail send --track` with a small Cloudflare Worker backend
 - **Calendar** - list/create/update events, detect conflicts, manage invitations, check free/busy status, team calendars, propose new times, focus/OOO/working-location events, recurrence + reminders
 - **Classroom** - manage courses, roster, coursework/materials, submissions, announcements, topics, invitations, guardians, profiles
-- **Drive** - list/search/upload/download files, manage permissions, organize folders
-- **Contacts** - search/create/update contacts, access Workspace directory
+- **Drive** - list/search/upload/download files, manage permissions/comments, organize folders, list shared drives
+- **Contacts** - search/create/update contacts, access Workspace directory/other contacts
 - **Tasks** - manage tasklists and tasks: get/create/add/update/done/undo/delete/clear, repeat schedules
-- **Sheets** - read/write/update spreadsheets, create new sheets (and export via Drive)
+- **Sheets** - read/write/update spreadsheets, format cells, create new sheets (and export via Drive)
 - **Docs/Slides** - export to PDF/DOCX/PPTX via Drive (plus create/copy, docs-to-text)
 - **People** - access profile information
 - **Keep (Workspace only)** - list/get/search notes and download attachments (service account + domain-wide delegation)
