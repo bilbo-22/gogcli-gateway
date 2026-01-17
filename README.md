@@ -6,22 +6,24 @@ Google in your terminal — CLI for Gmail, Calendar, Classroom, Drive, Docs, Sli
 
 - **Gmail** - search threads, send emails, manage labels, drafts, filters, delegation, vacation settings, and watch (Pub/Sub push)
 - **Email tracking** - track opens for `gog gmail send --track` with a small Cloudflare Worker backend
-- **Calendar** - list/create/update events, detect conflicts, manage invitations, check free/busy status, team calendars
+- **Calendar** - list/create/update events, detect conflicts, manage invitations, check free/busy status, team calendars, propose new times, focus/OOO/working-location events, recurrence + reminders
 - **Classroom** - list courses, rosters, coursework, submissions, announcements, topics, invitations, guardians
 - **Drive** - list/search/upload/download files, manage permissions, organize folders
 - **Contacts** - search/create/update contacts, access Workspace directory
-- **Tasks** - manage tasklists and tasks: create/add/update/done/undo/delete/clear
+- **Tasks** - manage tasklists and tasks: get/create/add/update/done/undo/delete/clear, repeat schedules
 - **Sheets** - read/write/update spreadsheets, create new sheets (and export via Drive)
 - **Docs/Slides** - export to PDF/DOCX/PPTX via Drive (plus create/copy, docs-to-text)
 - **People** - access profile information
 - **Keep (Workspace only)** - list/get/search notes and download attachments (service account + domain-wide delegation)
 - **Groups** - list groups you belong to, view group members (Google Workspace)
-- **Multiple accounts** - manage multiple Google accounts simultaneously
+- **Local time** - quick local/UTC time display for scripts and agents
+- **Multiple accounts** - manage multiple Google accounts simultaneously (with aliases)
+- **Command allowlist** - restrict top-level commands for sandboxed/agent runs
 - **Secure credential storage** using OS keyring or encrypted on-disk keyring (configurable)
 - **Auto-refreshing tokens** - authenticate once, use indefinitely
 - **Least-privilege auth** - `--readonly` and `--drive-scope` to request fewer scopes
 - **Workspace service accounts** - domain-wide delegation auth (preferred when configured)
-- **Parseable output** - JSON mode for scripting and automation
+- **Parseable output** - JSON mode for scripting and automation (Calendar adds day-of-week fields)
 
 ## Installation
 
@@ -174,9 +176,16 @@ Specify the account using either a flag or environment variable:
 # Via flag
 gog gmail search 'newer_than:7d' --account you@gmail.com
 
+# Via alias
+gog auth alias set work work@company.com
+gog gmail search 'newer_than:7d' --account work
+
 # Via environment
 export GOG_ACCOUNT=you@gmail.com
 gog gmail search 'newer_than:7d'
+
+# Auto-select (default account or the single stored token)
+gog gmail labels list --account auto
 ```
 
 List configured accounts:
@@ -307,6 +316,7 @@ gog keep get <noteId> --account you@yourdomain.com
 - `GOG_JSON` - Default JSON output
 - `GOG_PLAIN` - Default plain output
 - `GOG_COLOR` - Color mode: `auto` (default), `always`, or `never`
+- `GOG_TIMEZONE` - Default output timezone for Calendar/Gmail (IANA name, `UTC`, or `local`)
 - `GOG_ENABLE_COMMANDS` - Comma-separated allowlist of top-level commands (e.g., `calendar,tasks`)
 
 ### Config File (JSON5)
@@ -325,6 +335,8 @@ Example (JSON5 supports comments and trailing commas):
 {
   // Avoid macOS Keychain prompts
   keyring_backend: "file",
+  // Default output timezone for Calendar/Gmail (IANA, UTC, or local)
+  default_timezone: "UTC",
   // Optional account aliases
   account_aliases: {
     work: "work@company.com",
@@ -333,12 +345,36 @@ Example (JSON5 supports comments and trailing commas):
 }
 ```
 
+### Config Commands
+
+```bash
+gog config path
+gog config list
+gog config keys
+gog config get default_timezone
+gog config set default_timezone UTC
+gog config unset default_timezone
+```
+
 ### Account Aliases
 
 ```bash
 gog auth alias set work work@company.com
 gog auth alias list
 gog auth alias unset work
+```
+
+Aliases work anywhere you pass `--account` or `GOG_ACCOUNT` (reserved: `auto`, `default`).
+
+### Command Allowlist (Sandboxing)
+
+```bash
+# Only allow calendar + tasks commands for an agent
+gog --enable-commands calendar,tasks calendar events --today
+
+# Same via env
+export GOG_ENABLE_COMMANDS=calendar,tasks
+gog tasks list <tasklistId>
 ```
  
 ## Security
@@ -552,6 +588,25 @@ gog calendar update <calendarId> <eventId> \
   --from 2025-01-15T11:00:00Z \
   --to 2025-01-15T12:00:00Z
 
+# Send notifications when creating/updating
+gog calendar create <calendarId> \
+  --summary "Team Sync" \
+  --from 2025-01-15T14:00:00Z \
+  --to 2025-01-15T15:00:00Z \
+  --send-updates all
+
+gog calendar update <calendarId> <eventId> \
+  --send-updates externalOnly
+
+# Recurrence + reminders
+gog calendar create <calendarId> \
+  --summary "Payment" \
+  --from 2025-02-11T09:00:00-03:00 \
+  --to 2025-02-11T09:15:00-03:00 \
+  --rrule "RRULE:FREQ=MONTHLY;BYMONTHDAY=11" \
+  --reminder "email:3d" \
+  --reminder "popup:30m"
+
 # Special event types via --event-type (focus-time/out-of-office/working-location)
 gog calendar create primary \
   --event-type focus-time \
@@ -571,6 +626,11 @@ gog calendar create primary \
   --from 2025-01-22 \
   --to 2025-01-23
 
+# Dedicated shortcuts (same event types, more opinionated defaults)
+gog calendar focus-time --from 2025-01-15T13:00:00Z --to 2025-01-15T14:00:00Z
+gog calendar out-of-office --from 2025-01-20 --to 2025-01-21 --all-day
+gog calendar working-location --type office --office-label "HQ" --from 2025-01-22 --to 2025-01-23
+
 # Add attendees without replacing existing attendees/RSVP state
 gog calendar update <calendarId> <eventId> \
   --add-attendee "alice@example.com,bob@example.com"
@@ -581,6 +641,12 @@ gog calendar delete <calendarId> <eventId>
 gog calendar respond <calendarId> <eventId> --status accepted
 gog calendar respond <calendarId> <eventId> --status declined
 gog calendar respond <calendarId> <eventId> --status tentative
+gog calendar respond <calendarId> <eventId> --status declined --send-updates externalOnly
+
+# Propose a new time (browser-only flow; API limitation)
+gog calendar propose-time <calendarId> <eventId>
+gog calendar propose-time <calendarId> <eventId> --open
+gog calendar propose-time <calendarId> <eventId> --decline --comment "Can we do 5pm?"
 
 # Availability
 gog calendar freebusy --calendars "primary,work@example.com" \
@@ -698,6 +764,7 @@ gog tasks list <tasklistId> --max 50
 gog tasks get <tasklistId> <taskId>
 gog tasks add <tasklistId> --title "Task title"
 gog tasks add <tasklistId> --title "Weekly sync" --due 2025-02-01 --repeat weekly --repeat-count 4
+gog tasks add <tasklistId> --title "Daily standup" --due 2025-02-01 --repeat daily --repeat-until 2025-02-05
 gog tasks update <tasklistId> <taskId> --title "New title"
 gog tasks done <tasklistId> <taskId>
 gog tasks undo <tasklistId> <taskId>
@@ -814,6 +881,10 @@ gog --json drive ls --max 5 | jq '.files[] | select(.mimeType=="application/pdf"
 Useful pattern:
 
 - `gog --json ... | jq .`
+
+Calendar JSON convenience fields:
+
+- `startDayOfWeek` / `endDayOfWeek` on event payloads (derived from start/end).
 
 ## Examples
 
