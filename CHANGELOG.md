@@ -11,6 +11,7 @@
 
 - Auth: fix Gmail search example in auth success template. (#89) — thanks @rvben.
 - Chat: normalize thread IDs and show a clearer error for consumer accounts. (#84)
+- CLI: remove redundant newlines in text output for calendar, chat, Gmail, and groups commands. (#91) — thanks @salmonumbrella.
 
 ## 0.7.0 - 2026-01-17
 
