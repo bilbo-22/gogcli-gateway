@@ -13,7 +13,10 @@ import (
 	"github.com/steipete/gogcli/internal/ui"
 )
 
-const contactsReadMask = "names,emailAddresses,phoneNumbers"
+const (
+	contactsReadMask    = "names,emailAddresses,phoneNumbers"
+	contactsGetReadMask = contactsReadMask + ",birthdays"
+)
 
 type ContactsListCmd struct {
 	Max  int64  `name:"max" aliases:"limit" help:"Max results" default:"100"`
@@ -110,7 +113,7 @@ func (c *ContactsGetCmd) Run(ctx context.Context, flags *RootFlags) error {
 
 	var p *people.Person
 	if strings.HasPrefix(identifier, "people/") {
-		p, err = svc.People.Get(identifier).PersonFields(contactsReadMask).Do()
+		p, err = svc.People.Get(identifier).PersonFields(contactsGetReadMask).Do()
 		if err != nil {
 			return err
 		}
@@ -118,7 +121,7 @@ func (c *ContactsGetCmd) Run(ctx context.Context, flags *RootFlags) error {
 		resp, err := svc.People.SearchContacts().
 			Query(identifier).
 			PageSize(10).
-			ReadMask(contactsReadMask).
+			ReadMask(contactsGetReadMask).
 			Do()
 		if err != nil {
 			return err
@@ -155,6 +158,9 @@ func (c *ContactsGetCmd) Run(ctx context.Context, flags *RootFlags) error {
 	}
 	if ph := primaryPhone(p); ph != "" {
 		u.Out().Printf("phone\t%s", ph)
+	}
+	if bd := primaryBirthday(p); bd != "" {
+		u.Out().Printf("birthday\t%s", bd)
 	}
 	return nil
 }

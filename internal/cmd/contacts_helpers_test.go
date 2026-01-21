@@ -55,3 +55,43 @@ func TestPrimaryEmailAndPhone_EdgeCases(t *testing.T) {
 		t.Fatalf("unexpected: %q", got)
 	}
 }
+
+func TestPrimaryBirthday_EdgeCases(t *testing.T) {
+	if got := primaryBirthday(nil); got != "" {
+		t.Fatalf("expected empty, got %q", got)
+	}
+	if got := primaryBirthday(&people.Person{}); got != "" {
+		t.Fatalf("expected empty, got %q", got)
+	}
+	if got := primaryBirthday(&people.Person{Birthdays: []*people.Birthday{nil}}); got != "" {
+		t.Fatalf("expected empty, got %q", got)
+	}
+
+	p1 := &people.Person{Birthdays: []*people.Birthday{{Date: &people.Date{Year: 1815, Month: 12, Day: 10}}}}
+	if got := primaryBirthday(p1); got != "1815-12-10" {
+		t.Fatalf("unexpected: %q", got)
+	}
+
+	p2 := &people.Person{Birthdays: []*people.Birthday{{Date: &people.Date{Month: 12, Day: 10}}}}
+	if got := primaryBirthday(p2); got != "12-10" {
+		t.Fatalf("unexpected: %q", got)
+	}
+
+	p3 := &people.Person{Birthdays: []*people.Birthday{{Date: &people.Date{Year: 1815}}}}
+	if got := primaryBirthday(p3); got != "1815" {
+		t.Fatalf("unexpected: %q", got)
+	}
+
+	p4 := &people.Person{Birthdays: []*people.Birthday{{Text: "Dec 10"}}}
+	if got := primaryBirthday(p4); got != "Dec 10" {
+		t.Fatalf("unexpected: %q", got)
+	}
+
+	p5 := &people.Person{Birthdays: []*people.Birthday{
+		{Date: &people.Date{Year: 1900, Month: 1, Day: 1}},
+		{Date: &people.Date{Year: 1815, Month: 12, Day: 10}, Metadata: &people.FieldMetadata{Primary: true}},
+	}}
+	if got := primaryBirthday(p5); got != "1815-12-10" {
+		t.Fatalf("unexpected: %q", got)
+	}
+}

@@ -44,7 +44,7 @@ func (c *ContactsSearchCmd) Run(ctx context.Context, flags *RootFlags) error {
 	resp, err := svc.People.SearchContacts().
 		Query(query).
 		PageSize(c.Max).
-		ReadMask("names,emailAddresses,phoneNumbers").
+		ReadMask(contactsReadMask).
 		Do()
 	if err != nil {
 		return err
@@ -118,6 +118,52 @@ func primaryPhone(p *people.Person) string {
 		return ""
 	}
 	return p.PhoneNumbers[0].Value
+}
+
+func primaryBirthday(p *people.Person) string {
+	if p == nil || len(p.Birthdays) == 0 {
+		return ""
+	}
+	var chosen *people.Birthday
+	for _, b := range p.Birthdays {
+		if b == nil {
+			continue
+		}
+		if b.Metadata != nil && b.Metadata.Primary {
+			chosen = b
+			break
+		}
+		if chosen == nil {
+			chosen = b
+		}
+	}
+	if chosen == nil {
+		return ""
+	}
+	if formatted := formatPartialDate(chosen.Date); formatted != "" {
+		return formatted
+	}
+	return strings.TrimSpace(chosen.Text)
+}
+
+func formatPartialDate(d *people.Date) string {
+	if d == nil {
+		return ""
+	}
+	parts := make([]string, 0, 3)
+	if d.Year > 0 {
+		parts = append(parts, fmt.Sprintf("%04d", d.Year))
+	}
+	if d.Month > 0 {
+		parts = append(parts, fmt.Sprintf("%02d", d.Month))
+	}
+	if d.Day > 0 {
+		parts = append(parts, fmt.Sprintf("%02d", d.Day))
+	}
+	if len(parts) == 0 {
+		return ""
+	}
+	return strings.Join(parts, "-")
 }
 
 func sanitizeTab(s string) string {
