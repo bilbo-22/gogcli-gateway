@@ -37,7 +37,7 @@ func TestReplyHeaders(t *testing.T) {
 		}},
 	}
 
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	svc, cleanup := newGmailServiceForTest(t, func(w http.ResponseWriter, r *http.Request) {
 		if !strings.HasPrefix(r.URL.Path, "/gmail/v1/users/me/messages/") {
 			http.NotFound(w, r)
 			return
@@ -61,17 +61,8 @@ func TestReplyHeaders(t *testing.T) {
 		}
 		w.Header().Set("Content-Type", "application/json")
 		_ = json.NewEncoder(w).Encode(resp)
-	}))
-	defer srv.Close()
-
-	svc, err := gmail.NewService(context.Background(),
-		option.WithoutAuthentication(),
-		option.WithHTTPClient(srv.Client()),
-		option.WithEndpoint(srv.URL+"/"),
-	)
-	if err != nil {
-		t.Fatalf("NewService: %v", err)
-	}
+	})
+	defer cleanup()
 
 	ctx := context.Background()
 
@@ -137,7 +128,7 @@ func TestFetchReplyInfo_ThreadID(t *testing.T) {
 		},
 	}
 
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	svc, cleanup := newGmailServiceForTest(t, func(w http.ResponseWriter, r *http.Request) {
 		if !strings.HasPrefix(r.URL.Path, "/gmail/v1/users/me/threads/") {
 			http.NotFound(w, r)
 			return
@@ -168,17 +159,8 @@ func TestFetchReplyInfo_ThreadID(t *testing.T) {
 		}
 		w.Header().Set("Content-Type", "application/json")
 		_ = json.NewEncoder(w).Encode(resp)
-	}))
-	defer srv.Close()
-
-	svc, err := gmail.NewService(context.Background(),
-		option.WithoutAuthentication(),
-		option.WithHTTPClient(srv.Client()),
-		option.WithEndpoint(srv.URL+"/"),
-	)
-	if err != nil {
-		t.Fatalf("NewService: %v", err)
-	}
+	})
+	defer cleanup()
 
 	info, err := fetchReplyInfo(context.Background(), svc, "", "t1", false)
 	if err != nil {
@@ -232,7 +214,7 @@ func TestFetchReplyInfo_ThreadID_IncludeBody_FetchesOnlySelectedMessage(t *testi
 	}
 
 	var threadCalls, messageCalls int
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	svc, cleanup := newGmailServiceForTest(t, func(w http.ResponseWriter, r *http.Request) {
 		switch {
 		case strings.HasPrefix(r.URL.Path, "/gmail/v1/users/me/threads/"):
 			threadCalls++
@@ -309,17 +291,8 @@ func TestFetchReplyInfo_ThreadID_IncludeBody_FetchesOnlySelectedMessage(t *testi
 		}
 
 		http.NotFound(w, r)
-	}))
-	defer srv.Close()
-
-	svc, err := gmail.NewService(context.Background(),
-		option.WithoutAuthentication(),
-		option.WithHTTPClient(srv.Client()),
-		option.WithEndpoint(srv.URL+"/"),
-	)
-	if err != nil {
-		t.Fatalf("NewService: %v", err)
-	}
+	})
+	defer cleanup()
 
 	info, err := fetchReplyInfo(context.Background(), svc, "", "t1", true)
 	if err != nil {
@@ -356,7 +329,7 @@ func TestGmailSendCmd_RunJSON(t *testing.T) {
 	origNew := newGmailService
 	t.Cleanup(func() { newGmailService = origNew })
 
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	svc, cleanup := newGmailServiceForTest(t, func(w http.ResponseWriter, r *http.Request) {
 		path := strings.TrimPrefix(r.URL.Path, "/gmail/v1")
 		if r.Method == http.MethodPost && path == "/users/me/messages/send" {
 			w.Header().Set("Content-Type", "application/json")
@@ -367,17 +340,8 @@ func TestGmailSendCmd_RunJSON(t *testing.T) {
 			return
 		}
 		http.NotFound(w, r)
-	}))
-	defer srv.Close()
-
-	svc, err := gmail.NewService(context.Background(),
-		option.WithoutAuthentication(),
-		option.WithHTTPClient(srv.Client()),
-		option.WithEndpoint(srv.URL+"/"),
-	)
-	if err != nil {
-		t.Fatalf("NewService: %v", err)
-	}
+	})
+	defer cleanup()
 	newGmailService = func(context.Context, string) (*gmail.Service, error) { return svc, nil }
 
 	u, err := ui.New(ui.Options{Stdout: os.Stdout, Stderr: os.Stderr, Color: "never"})
