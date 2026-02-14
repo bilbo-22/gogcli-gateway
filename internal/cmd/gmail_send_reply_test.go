@@ -30,7 +30,7 @@ func TestReplyInfoFromMessage_More(t *testing.T) {
 			},
 		},
 	}
-	info := replyInfoFromMessage(msg)
+	info := replyInfoFromMessage(msg, false)
 	if info.InReplyTo != "<m1>" {
 		t.Fatalf("unexpected InReplyTo: %q", info.InReplyTo)
 	}
@@ -100,7 +100,7 @@ func TestFetchReplyInfoFromThread(t *testing.T) {
 	}
 	newGmailService = func(context.Context, string) (*gmail.Service, error) { return svc, nil }
 
-	info, err := fetchReplyInfo(context.Background(), svc, "", "t1")
+	info, err := fetchReplyInfo(context.Background(), svc, "", "t1", false)
 	if err != nil {
 		t.Fatalf("fetchReplyInfo: %v", err)
 	}
