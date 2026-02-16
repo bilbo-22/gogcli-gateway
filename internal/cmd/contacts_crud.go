@@ -426,7 +426,6 @@ func (c *ContactsUpdateCmd) Run(ctx context.Context, kctx *kong.Context, flags *
 		userDefined, parseErr := parseCustomUserDefined(c.Custom, true)
 		if parseErr != nil {
 			return usage(parseErr.Error())
-		}
 		existing.UserDefined = userDefined
 		updateFields = append(updateFields, "userDefined")
 	}
