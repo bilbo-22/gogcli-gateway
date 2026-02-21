@@ -21,6 +21,10 @@ gog gmail search 'newer_than:7d'   # routed through the webhook
 
 When `N8N_GOG_WEBHOOK_URL` is unset, the CLI behaves identically to upstream gogcli.
 
+### Building the n8n workflow
+
+See [docs/n8n-gateway.md](docs/n8n-gateway.md) for a step-by-step guide to building the n8n webhook workflow (request/response format, authentication, code snippets for each node).
+
 ### Changed files
 
 | File | Change |
