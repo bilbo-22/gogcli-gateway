@@ -4,7 +4,7 @@
 
 ## What this fork adds
 
-This fork adds a single capability: routing **all Google API requests** through an [n8n](https://n8n.io/) webhook gateway. When the `N8N_WEBHOOK_URL` environment variable is set, the CLI skips OAuth entirely and forwards every HTTP request to your n8n webhook as a JSON payload. The webhook is responsible for authentication, execution, and returning the response.
+This fork adds a single capability: routing **all Google API requests** through an [n8n](https://n8n.io/) webhook gateway. When the `N8N_GOG_WEBHOOK_URL` environment variable is set, the CLI skips OAuth entirely and forwards every HTTP request to your n8n webhook as a JSON payload. The webhook is responsible for authentication, execution, and returning the response.
 
 This enables:
 - **Centralized auth** — manage Google credentials in n8n instead of on every machine
@@ -15,11 +15,11 @@ This enables:
 ### Usage
 
 ```bash
-export N8N_WEBHOOK_URL=https://your-n8n-instance.com/webhook/google-api-proxy
+export N8N_GOG_WEBHOOK_URL=https://your-n8n-instance.com/webhook/google-api-proxy
 gog gmail search 'newer_than:7d'   # routed through the webhook
 ```
 
-When `N8N_WEBHOOK_URL` is unset, the CLI behaves identically to upstream gogcli.
+When `N8N_GOG_WEBHOOK_URL` is unset, the CLI behaves identically to upstream gogcli.
 
 ### Changed files
 

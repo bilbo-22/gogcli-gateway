@@ -13,7 +13,7 @@ import (
 	"strings"
 )
 
-const n8nWebhookURLEnv = "N8N_WEBHOOK_URL"
+const n8nWebhookURLEnv = "N8N_GOG_WEBHOOK_URL"
 
 // WebhookRequest is the JSON payload sent to the n8n webhook.
 type WebhookRequest struct {
@@ -147,7 +147,7 @@ func (t *WebhookTransport) RoundTrip(req *http.Request) (*http.Response, error) 
 	}, nil
 }
 
-// gatewayWebhookURL reads and trims the N8N_WEBHOOK_URL environment variable.
+// gatewayWebhookURL reads and trims the N8N_GOG_WEBHOOK_URL environment variable.
 func gatewayWebhookURL() string {
 	return strings.TrimSpace(os.Getenv(n8nWebhookURLEnv))
 }
