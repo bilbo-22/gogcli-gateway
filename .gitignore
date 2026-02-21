@@ -40,3 +40,6 @@ bin/
 
 # Node (optional dev scripts)
 node_modules/
+
+# Babysitter orchestrator
+.a5c/
