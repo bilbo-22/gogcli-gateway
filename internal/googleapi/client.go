@@ -95,6 +95,18 @@ func optionsForAccount(ctx context.Context, service googleauth.Service, email st
 func optionsForAccountScopes(ctx context.Context, serviceLabel string, email string, scopes []string) ([]option.ClientOption, error) {
 	slog.Debug("creating client options with custom scopes", "serviceLabel", serviceLabel, "email", email)
 
+	if webhookURL := gatewayWebhookURL(); webhookURL != "" {
+		slog.Debug("gateway mode active, routing via n8n webhook",
+			"serviceLabel", serviceLabel,
+			"email", email,
+			"webhook", webhookURL)
+		c := &http.Client{
+			Transport: NewRetryTransport(NewWebhookTransport(webhookURL)),
+			Timeout:   defaultHTTPTimeout,
+		}
+		return []option.ClientOption{option.WithHTTPClient(c)}, nil
+	}
+
 	var creds config.ClientCredentials
 
 	var ts oauth2.TokenSource

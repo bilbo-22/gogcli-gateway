@@ -295,3 +295,33 @@ func TestNewBaseTransport_RespectsProxyAndTLSMinimum(t *testing.T) {
 		t.Fatalf("expected HTTPS proxy to be honored, got: %v", proxyURL)
 	}
 }
+
+func TestOptionsForAccountScopes_GatewayMode(t *testing.T) {
+	t.Setenv(n8nWebhookURLEnv, "https://n8n.example.com/webhook/test")
+
+	origRead := readClientCredentials
+	origOpen := openSecretsStore
+
+	t.Cleanup(func() {
+		readClientCredentials = origRead
+		openSecretsStore = origOpen
+	})
+
+	readClientCredentials = func(string) (config.ClientCredentials, error) {
+		t.Fatalf("readClientCredentials should not be called in gateway mode")
+		return config.ClientCredentials{}, nil
+	}
+	openSecretsStore = func() (secrets.Store, error) {
+		t.Fatalf("openSecretsStore should not be called in gateway mode")
+		return nil, errBoom
+	}
+
+	opts, err := optionsForAccountScopes(context.Background(), "svc", "a@b.com", []string{"s1"})
+	if err != nil {
+		t.Fatalf("unexpected err: %v", err)
+	}
+
+	if len(opts) == 0 {
+		t.Fatalf("expected client options")
+	}
+}

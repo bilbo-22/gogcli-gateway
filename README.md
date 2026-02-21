@@ -1,3 +1,48 @@
+# gogcli-gateway
+
+> Fork of [steipete/gogcli](https://github.com/steipete/gogcli) with **n8n webhook gateway** support.
+
+## What this fork adds
+
+This fork adds a single capability: routing **all Google API requests** through an [n8n](https://n8n.io/) webhook gateway. When the `N8N_WEBHOOK_URL` environment variable is set, the CLI skips OAuth entirely and forwards every HTTP request to your n8n webhook as a JSON payload. The webhook is responsible for authentication, execution, and returning the response.
+
+This enables:
+- **Centralized auth** — manage Google credentials in n8n instead of on every machine
+- **Logging & auditing** — every API call passes through your webhook workflow
+- **Request transformation** — add rate limiting, caching, or custom middleware via n8n
+- **Sandboxed execution** — run gogcli in environments without direct Google API access
+
+### Usage
+
+```bash
+export N8N_WEBHOOK_URL=https://your-n8n-instance.com/webhook/google-api-proxy
+gog gmail search 'newer_than:7d'   # routed through the webhook
+```
+
+When `N8N_WEBHOOK_URL` is unset, the CLI behaves identically to upstream gogcli.
+
+### Changed files
+
+| File | Change |
+| --- | --- |
+| `internal/googleapi/gateway.go` | `WebhookTransport` — an `http.RoundTripper` that serializes requests as JSON, sends them to the webhook, and reconstructs the response (with base64 body encoding, header flattening, context propagation) |
+| `internal/googleapi/gateway_test.go` | Unit tests for the transport (GET/POST, error handling, context cancellation, base64 fallback) |
+| `internal/googleapi/client.go` | Short-circuit in `optionsForAccountScopes()` — when the env var is set, skip credential/token lookup and use the webhook transport with retry wrapping |
+| `internal/googleapi/client_more_test.go` | Test that gateway mode works without credentials on disk |
+
+### Staying up to date
+
+```bash
+git fetch upstream
+git merge upstream/main
+```
+
+The gateway changes touch very few lines in existing code (a single early-return block in `client.go`), so upstream merges should be clean.
+
+---
+
+# Original README
+
 # 🧭 gogcli — Google in your terminal.
 
 ![GitHub Repo Banner](https://ghrb.waren.build/banner?header=gogcli%F0%9F%A7%AD&subheader=Google+in+your+terminal&bg=f3f4f6&color=1f2937&support=true)
