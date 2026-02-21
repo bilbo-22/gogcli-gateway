@@ -1,47 +1,198 @@
 # gogcli-gateway
 
-> Fork of [steipete/gogcli](https://github.com/steipete/gogcli) with **n8n webhook gateway** support.
+A minimal fork of of [steipete/gogcli](https://github.com/steipete/gogcli) that inserts a control layer between the CLI and Google APIs.
 
-## What this fork adds
+It keeps the CLI surface the same.
+It changes where trust lives.
 
-This fork adds a single capability: routing **all Google API requests** through an [n8n](https://n8n.io/) webhook gateway. When the `N8N_GOG_WEBHOOK_URL` environment variable is set, the CLI skips OAuth entirely and forwards every HTTP request to your n8n webhook as a JSON payload. The webhook is responsible for authentication, execution, and returning the response.
+---
 
-This enables:
-- **Centralized auth** — manage Google credentials in n8n instead of on every machine
-- **Logging & auditing** — every API call passes through your webhook workflow
-- **Request transformation** — add rate limiting, caching, or custom middleware via n8n
-- **Sandboxed execution** — run gogcli in environments without direct Google API access
+## Why this exists
 
-### Usage
+If you run agents, automation loops, or LLM tooling, you eventually hit the same problem:
 
-```bash
-export N8N_GOG_WEBHOOK_URL=https://your-n8n-instance.com/webhook/google-api-proxy
-gog gmail search 'newer_than:7d'   # routed through the webhook
+The agent has the token.
+The token can do everything the scopes allow.
+So the agent can do everything.
+
+That’s too much trust.
+
+This fork moves Google API execution out of the CLI process and into a gateway you control.
+
+Not just for credential isolation.
+For policy control.
+
+---
+
+## What this changes
+
+When `N8N_GOG_WEBHOOK_URL` is set:
+
+* OAuth is skipped locally
+* No credential lookup on disk
+* Every Google API request is serialized
+* Sent to your webhook
+* Executed there
+* Response returned to the CLI
+
+When the env var is not set, behavior is identical to upstream `gogcli`.
+
+Minimal code changes. Clean upstream merges.
+
+---
+
+## Architecture
+
+Instead of:
+
+```
+Agent → gogcli → Google
 ```
 
-When `N8N_GOG_WEBHOOK_URL` is unset, the CLI behaves identically to upstream gogcli.
+You get:
 
-### Building the n8n workflow
+```
+Agent → gogcli → Gateway → Google
+```
 
-See [docs/n8n-gateway.md](docs/n8n-gateway.md) for a step-by-step guide to building the n8n webhook workflow (request/response format, authentication, code snippets for each node).
+The gateway becomes your enforcement layer.
 
-### Changed files
+---
 
-| File | Change |
-| --- | --- |
-| `internal/googleapi/gateway.go` | `WebhookTransport` — an `http.RoundTripper` that serializes requests as JSON, sends them to the webhook, and reconstructs the response (with base64 body encoding, header flattening, context propagation) |
-| `internal/googleapi/gateway_test.go` | Unit tests for the transport (GET/POST, error handling, context cancellation, base64 fallback) |
-| `internal/googleapi/client.go` | Short-circuit in `optionsForAccountScopes()` — when the env var is set, skip credential/token lookup and use the webhook transport with retry wrapping |
-| `internal/googleapi/client_more_test.go` | Test that gateway mode works without credentials on disk |
+## What the gateway enables
 
-### Staying up to date
+This is the important part.
+
+Not just secret isolation — **control**.
+
+Because execution now happens in your webhook layer, you can:
+
+* Allow read-only operations
+* Block destructive actions
+* Require approval before writes
+* Restrict domains or recipients
+* Strip attachments
+* Rate-limit bulk operations
+* Log every request
+* Detect anomalies
+* Deny specific endpoints entirely
+
+Even if:
+
+* An agent gets prompt-injected
+* The CLI runs in an untrusted environment
+* Someone discovers your webhook URL
+
+They still hit your policy layer.
+
+The token alone is no longer enough.
+
+---
+
+## Example
 
 ```bash
+export N8N_GOG_WEBHOOK_URL=https://your-n8n/webhook/google-api-proxy
+
+gog gmail search 'newer_than:7d'
+```
+
+The CLI sends the raw HTTP request as JSON.
+
+Your gateway:
+
+* authenticates
+* applies rules
+* optionally requires human approval
+* forwards to Google
+* returns the response
+
+---
+
+## Human-in-the-loop
+
+Because all write operations pass through your gateway, you can implement approval steps:
+
+Example:
+
+* Agent attempts `gog gmail send`
+* Gateway pauses execution
+* Sends you a notification
+* You approve or deny
+* Only then does it execute
+
+You can do this for:
+
+* Email sending
+* Deletes
+* Drive uploads
+* Permission changes
+* Anything destructive
+
+Upstream `gogcli` cannot do this.
+
+---
+
+## Comparison
+
+| Area                   | `gogcli`                         | `gogcli-gateway`                           |
+| ---------------------- | -------------------------------- | ------------------------------------------ |
+| Execution model        | Direct CLI → Google              | CLI → Your Gateway → Google                |
+| Credential location    | Local machine                    | Centralized (gateway side)                 |
+| Policy enforcement     | OAuth scopes only                | Full custom policy layer                   |
+| Fine-grained control   | No                               | Yes                                        |
+| Block specific actions | No                               | Yes                                        |
+| Human-in-the-loop      | No                               | Yes                                        |
+| Rate limiting          | No                               | Yes                                        |
+| Logging / audit        | No built-in                      | Centralized                                |
+| Abuse containment      | If token valid → action executes | Gateway can deny even with valid token     |
+| Agent-safe by default  | No                               | Yes (agent never holds Google credentials) |
+
+---
+
+## What did not change
+
+* CLI interface
+* Commands
+* Flags
+* JSON output
+* Upstream compatibility
+
+The fork adds a custom `http.RoundTripper` and an early return in `client.go`.
+
+That’s it.
+
+---
+
+## Staying up to date
+
+```bash
+git remote add upstream https://github.com/steipete/gogcli.git
 git fetch upstream
 git merge upstream/main
 ```
 
-The gateway changes touch very few lines in existing code (a single early-return block in `client.go`), so upstream merges should be clean.
+The patch surface is small. Merges are clean.
+
+---
+
+## Important
+
+This project does not make automation safe by magic.
+
+It gives you a boundary.
+
+You still need:
+
+* Proper gateway hosting
+* Proper secret storage
+* Network isolation
+* Sensible policy logic
+
+This fork only inserts the enforcement layer.
+
+What you do with it is up to you.
+
 
 ---
 
