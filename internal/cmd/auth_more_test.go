@@ -177,3 +177,29 @@ func TestAuthStatusCmd_JSON(t *testing.T) {
 		t.Fatalf("unexpected status output: %q", out)
 	}
 }
+
+func TestAuthStatusCmd_JSON_WebhookEnabled(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("XDG_CONFIG_HOME", filepath.Join(home, "xdg"))
+	t.Setenv("GOG_WEBHOOK_URL", "https://n8n.example.com/webhook/google-api-proxy")
+
+	u, err := ui.New(ui.Options{Stdout: os.Stdout, Stderr: os.Stderr, Color: "never"})
+	if err != nil {
+		t.Fatalf("ui.New: %v", err)
+	}
+	ctx := outfmt.WithMode(ui.WithUI(context.Background(), u), outfmt.Mode{JSON: true})
+
+	cmd := AuthStatusCmd{}
+	out := captureStdout(t, func() {
+		if err := cmd.Run(ctx, &RootFlags{}); err != nil {
+			t.Fatalf("AuthStatusCmd: %v", err)
+		}
+	})
+	if !strings.Contains(out, "\"auth_ok\":true") {
+		t.Fatalf("expected auth_ok true in json: %q", out)
+	}
+	if !strings.Contains(out, "\"enabled\":true") {
+		t.Fatalf("expected webhook.enabled true in json: %q", out)
+	}
+}

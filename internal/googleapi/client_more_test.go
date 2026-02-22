@@ -297,7 +297,7 @@ func TestNewBaseTransport_RespectsProxyAndTLSMinimum(t *testing.T) {
 }
 
 func TestOptionsForAccountScopes_GatewayMode(t *testing.T) {
-	t.Setenv(n8nWebhookURLEnv, "https://n8n.example.com/webhook/test")
+	t.Setenv(webhookURLEnv, "https://n8n.example.com/webhook/test")
 
 	origRead := readClientCredentials
 	origOpen := openSecretsStore

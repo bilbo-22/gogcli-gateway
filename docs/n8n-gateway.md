@@ -1,6 +1,6 @@
 # n8n Webhook Gateway — Workflow Guide
 
-This guide explains how to build the n8n workflow that powers the gogcli webhook gateway. When `N8N_GOG_WEBHOOK_URL` is set, **every** Google API request from gogcli is serialized as JSON and sent to your n8n webhook. The webhook handles authentication, executes the real API call, and returns the response.
+This guide explains how to build the n8n workflow that powers the gogcli webhook gateway. When `GOG_WEBHOOK_URL` is set, **every** Google API request from gogcli is serialized as JSON and sent to your n8n webhook. The webhook handles authentication, executes the real API call, and returns the response.
 
 ## Architecture
 
@@ -168,14 +168,14 @@ Webhook Trigger → Decode Request → Add Auth → HTTP Request → Encode Resp
 ## Activate It
 
 ```bash
-export N8N_GOG_WEBHOOK_URL=https://your-n8n-instance.com/webhook/google-api-proxy
+export GOG_WEBHOOK_URL=https://your-n8n-instance.com/webhook/google-api-proxy
 gog gmail labels list   # routed through n8n
 ```
 
 To disable (revert to normal OAuth):
 
 ```bash
-unset N8N_GOG_WEBHOOK_URL
+unset GOG_WEBHOOK_URL
 ```
 
 ## Related Files

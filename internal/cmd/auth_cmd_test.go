@@ -282,6 +282,33 @@ func TestAuthStatus_Text_ConfigFile(t *testing.T) {
 	if !strings.Contains(out, "keyring_backend_source\tconfig") {
 		t.Fatalf("expected keyring_backend_source config, got: %q", out)
 	}
+	if !strings.Contains(out, "auth_ok\tfalse") {
+		t.Fatalf("expected auth_ok false, got: %q", out)
+	}
+	if !strings.Contains(out, "webhook_enabled\tfalse") {
+		t.Fatalf("expected webhook_enabled false, got: %q", out)
+	}
+}
+
+func TestAuthStatus_Text_WebhookEnabled(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+	t.Setenv("GOG_WEBHOOK_URL", "https://n8n.example.com/webhook/google-api-proxy")
+
+	out := captureStdout(t, func() {
+		_ = captureStderr(t, func() {
+			if err := Execute([]string{"auth", "status"}); err != nil {
+				t.Fatalf("Execute: %v", err)
+			}
+		})
+	})
+
+	if !strings.Contains(out, "auth_ok\ttrue") {
+		t.Fatalf("expected auth_ok true, got: %q", out)
+	}
+	if !strings.Contains(out, "webhook_enabled\ttrue") {
+		t.Fatalf("expected webhook_enabled true, got: %q", out)
+	}
 }
 
 func TestAuthTokensExport_RequiresOut(t *testing.T) {

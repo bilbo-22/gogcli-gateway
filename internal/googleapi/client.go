@@ -96,7 +96,7 @@ func optionsForAccountScopes(ctx context.Context, serviceLabel string, email str
 	slog.Debug("creating client options with custom scopes", "serviceLabel", serviceLabel, "email", email)
 
 	if webhookURL := gatewayWebhookURL(); webhookURL != "" {
-		slog.Debug("gateway mode active, routing via n8n webhook",
+		slog.Debug("gateway mode active, routing via webhook",
 			"serviceLabel", serviceLabel,
 			"email", email,
 			"webhook", webhookURL)

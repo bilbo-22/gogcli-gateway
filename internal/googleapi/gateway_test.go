@@ -232,7 +232,7 @@ func TestWebhookTransport_ContextCanceled(t *testing.T) {
 
 func TestGatewayWebhookURL(t *testing.T) {
 	t.Run("empty", func(t *testing.T) {
-		t.Setenv(n8nWebhookURLEnv, "")
+		t.Setenv(webhookURLEnv, "")
 
 		if got := gatewayWebhookURL(); got != "" {
 			t.Fatalf("expected empty, got %q", got)
@@ -240,7 +240,7 @@ func TestGatewayWebhookURL(t *testing.T) {
 	})
 
 	t.Run("trimmed", func(t *testing.T) {
-		t.Setenv(n8nWebhookURLEnv, "  https://n8n.example.com/webhook/abc  \n")
+		t.Setenv(webhookURLEnv, "  https://n8n.example.com/webhook/abc  \n")
 
 		got := gatewayWebhookURL()
 		if got != "https://n8n.example.com/webhook/abc" {
@@ -249,7 +249,7 @@ func TestGatewayWebhookURL(t *testing.T) {
 	})
 
 	t.Run("no_whitespace", func(t *testing.T) {
-		t.Setenv(n8nWebhookURLEnv, "https://n8n.example.com/webhook/def")
+		t.Setenv(webhookURLEnv, "https://n8n.example.com/webhook/def")
 
 		got := gatewayWebhookURL()
 		if got != "https://n8n.example.com/webhook/def" {

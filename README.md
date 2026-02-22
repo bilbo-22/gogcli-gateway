@@ -26,7 +26,7 @@ For policy control.
 
 ## What this changes
 
-When `N8N_GOG_WEBHOOK_URL` is set:
+When `GOG_WEBHOOK_URL` is set:
 
 * OAuth is skipped locally
 * No credential lookup on disk
@@ -92,7 +92,7 @@ The token alone is no longer enough.
 ## Example
 
 ```bash
-export N8N_GOG_WEBHOOK_URL=https://your-n8n/webhook/google-api-proxy
+export GOG_WEBHOOK_URL=https://your-n8n/webhook/google-api-proxy
 
 gog gmail search 'newer_than:7d'
 ```

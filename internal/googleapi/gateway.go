@@ -13,9 +13,9 @@ import (
 	"strings"
 )
 
-const n8nWebhookURLEnv = "N8N_GOG_WEBHOOK_URL"
+const webhookURLEnv = "GOG_WEBHOOK_URL"
 
-// WebhookRequest is the JSON payload sent to the n8n webhook.
+// WebhookRequest is the JSON payload sent to the webhook gateway.
 type WebhookRequest struct {
 	Method  string            `json:"method"`
 	URL     string            `json:"url"`
@@ -23,7 +23,7 @@ type WebhookRequest struct {
 	Body    string            `json:"body"`
 }
 
-// WebhookResponse is the JSON payload returned by the n8n webhook.
+// WebhookResponse is the JSON payload returned by the webhook gateway.
 type WebhookResponse struct {
 	StatusCode int               `json:"status_code"`
 	Headers    map[string]string `json:"headers"`
@@ -31,7 +31,7 @@ type WebhookResponse struct {
 }
 
 // WebhookTransport implements http.RoundTripper by forwarding requests
-// through an n8n webhook gateway.
+// through a webhook gateway.
 type WebhookTransport struct {
 	WebhookURL string
 	HTTPClient *http.Client
@@ -147,9 +147,9 @@ func (t *WebhookTransport) RoundTrip(req *http.Request) (*http.Response, error) 
 	}, nil
 }
 
-// gatewayWebhookURL reads and trims the N8N_GOG_WEBHOOK_URL environment variable.
+// gatewayWebhookURL reads and trims the GOG_WEBHOOK_URL environment variable.
 func gatewayWebhookURL() string {
-	return strings.TrimSpace(os.Getenv(n8nWebhookURLEnv))
+	return strings.TrimSpace(os.Getenv(webhookURLEnv))
 }
 
 // WebhookError indicates the webhook endpoint returned a non-200 status.

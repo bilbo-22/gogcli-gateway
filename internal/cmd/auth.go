@@ -48,6 +48,7 @@ const (
 	authTypeOAuth               = "oauth"
 	authTypeServiceAccount      = "service_account"
 	authTypeOAuthServiceAccount = "oauth+service_account"
+	authTypeWebhook             = "webhook"
 )
 
 type AuthCmd struct {
@@ -687,6 +688,8 @@ func (c *AuthStatusCmd) Run(ctx context.Context, flags *RootFlags) error {
 	if err != nil {
 		return err
 	}
+	webhookEnabled := strings.TrimSpace(os.Getenv("GOG_WEBHOOK_URL")) != ""
+	authOK := webhookEnabled
 
 	account := ""
 	authPreferred := ""
@@ -720,11 +723,18 @@ func (c *AuthStatusCmd) Run(ctx context.Context, flags *RootFlags) error {
 			} else {
 				authPreferred = authTypeOAuth
 			}
+			if webhookEnabled {
+				authPreferred = authTypeWebhook
+			}
+			if credentialsExists || serviceAccountConfigured {
+				authOK = true
+			}
 		}
 	}
 
 	if outfmt.IsJSON(ctx) {
 		return outfmt.WriteJSON(ctx, os.Stdout, map[string]any{
+			"auth_ok": authOK,
 			"config": map[string]any{
 				"path":   configPath,
 				"exists": configExists,
@@ -732,6 +742,9 @@ func (c *AuthStatusCmd) Run(ctx context.Context, flags *RootFlags) error {
 			"keyring": map[string]any{
 				"backend": backendInfo.Value,
 				"source":  backendInfo.Source,
+			},
+			"webhook": map[string]any{
+				"enabled": webhookEnabled,
 			},
 			"account": map[string]any{
 				"email":                      account,
@@ -746,8 +759,10 @@ func (c *AuthStatusCmd) Run(ctx context.Context, flags *RootFlags) error {
 	}
 	u.Out().Printf("config_path\t%s", configPath)
 	u.Out().Printf("config_exists\t%t", configExists)
+	u.Out().Printf("auth_ok\t%t", authOK)
 	u.Out().Printf("keyring_backend\t%s", backendInfo.Value)
 	u.Out().Printf("keyring_backend_source\t%s", backendInfo.Source)
+	u.Out().Printf("webhook_enabled\t%t", webhookEnabled)
 	if account != "" {
 		u.Out().Printf("account\t%s", account)
 		u.Out().Printf("client\t%s", client)
