@@ -4,7 +4,6 @@ import (
 	"strings"
 )
 
-
 // braceSpan represents a positioned brace expression within a replacement string.
 // It tracks where in the output text the formatting should be applied.
 type braceSpan struct {
