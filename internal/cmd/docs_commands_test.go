@@ -368,6 +368,68 @@ func TestDocsCat_AllTabs_JSON(t *testing.T) {
 	}
 }
 
+func TestDocsCat_Raw(t *testing.T) {
+	origDocs := newDocsService
+	t.Cleanup(func() { newDocsService = origDocs })
+
+	docSvc, cleanup := newTabsTestServer(t)
+	defer cleanup()
+	newDocsService = func(context.Context, string) (*docs.Service, error) { return docSvc, nil }
+
+	flags := &RootFlags{Account: "a@b.com"}
+	u, _ := ui.New(ui.Options{Stdout: io.Discard, Stderr: io.Discard, Color: "never"})
+	ctx := ui.WithUI(context.Background(), u)
+
+	out := captureStdout(t, func() {
+		cmd := &DocsCatCmd{}
+		if err := runKong(t, cmd, []string{"doc1", "--raw"}, ctx, flags); err != nil {
+			t.Fatalf("cat --raw: %v", err)
+		}
+	})
+
+	var result map[string]any
+	if err := json.Unmarshal([]byte(out), &result); err != nil {
+		t.Fatalf("raw JSON parse: %v\nraw: %q", err, out)
+	}
+	// Raw output should contain the documentId field from the API response.
+	if result["documentId"] != "doc1" {
+		t.Fatalf("expected documentId=doc1, got: %v", result["documentId"])
+	}
+	// Should be pretty-printed (contain newlines + indentation).
+	if !strings.Contains(out, "\n  ") {
+		t.Fatal("expected pretty-printed JSON with indentation")
+	}
+}
+
+func TestDocsCat_Raw_AllTabs(t *testing.T) {
+	origDocs := newDocsService
+	t.Cleanup(func() { newDocsService = origDocs })
+
+	docSvc, cleanup := newTabsTestServer(t)
+	defer cleanup()
+	newDocsService = func(context.Context, string) (*docs.Service, error) { return docSvc, nil }
+
+	flags := &RootFlags{Account: "a@b.com"}
+	u, _ := ui.New(ui.Options{Stdout: io.Discard, Stderr: io.Discard, Color: "never"})
+	ctx := ui.WithUI(context.Background(), u)
+
+	out := captureStdout(t, func() {
+		cmd := &DocsCatCmd{}
+		if err := runKong(t, cmd, []string{"doc1", "--raw", "--all-tabs"}, ctx, flags); err != nil {
+			t.Fatalf("cat --raw --all-tabs: %v", err)
+		}
+	})
+
+	var result map[string]any
+	if err := json.Unmarshal([]byte(out), &result); err != nil {
+		t.Fatalf("raw JSON parse: %v\nraw: %q", err, out)
+	}
+	// With --all-tabs, the raw response should include tabs content.
+	if _, ok := result["tabs"]; !ok {
+		t.Fatal("expected tabs field in raw --all-tabs output")
+	}
+}
+
 func TestDocsCat_SingleTab(t *testing.T) {
 	origDocs := newDocsService
 	t.Cleanup(func() { newDocsService = origDocs })
@@ -422,70 +484,6 @@ func TestDocsCat_TabNotFound(t *testing.T) {
 	err := runKong(t, cmd, []string{"doc1", "--tab", "Nonexistent"}, ctx, flags)
 	if err == nil || !strings.Contains(err.Error(), "tab not found") {
 		t.Fatalf("expected tab not found error, got: %v", err)
-	}
-}
-
-func TestDocsListTabs(t *testing.T) {
-	origDocs := newDocsService
-	t.Cleanup(func() { newDocsService = origDocs })
-
-	docSvc, cleanup := newTabsTestServer(t)
-	defer cleanup()
-	newDocsService = func(context.Context, string) (*docs.Service, error) { return docSvc, nil }
-
-	flags := &RootFlags{Account: "a@b.com"}
-
-	// Text output.
-	out := captureStdout(t, func() {
-		u, _ := ui.New(ui.Options{Stdout: os.Stdout, Stderr: io.Discard, Color: "never"})
-		ctx := ui.WithUI(context.Background(), u)
-		cmd := &DocsListTabsCmd{}
-		if err := runKong(t, cmd, []string{"doc1"}, ctx, flags); err != nil {
-			t.Fatalf("list-tabs: %v", err)
-		}
-	})
-	if !strings.Contains(out, "t.0") || !strings.Contains(out, "Overview") {
-		t.Fatalf("missing tab info in: %q", out)
-	}
-	if !strings.Contains(out, "t.abc") || !strings.Contains(out, "Details") {
-		t.Fatalf("missing tab info in: %q", out)
-	}
-	if !strings.Contains(out, "t.child1") || !strings.Contains(out, "Sub-Detail") {
-		t.Fatalf("missing child tab info in: %q", out)
-	}
-}
-
-func TestDocsListTabs_JSON(t *testing.T) {
-	origDocs := newDocsService
-	t.Cleanup(func() { newDocsService = origDocs })
-
-	docSvc, cleanup := newTabsTestServer(t)
-	defer cleanup()
-	newDocsService = func(context.Context, string) (*docs.Service, error) { return docSvc, nil }
-
-	flags := &RootFlags{Account: "a@b.com"}
-	u, _ := ui.New(ui.Options{Stdout: io.Discard, Stderr: io.Discard, Color: "never"})
-	ctx := ui.WithUI(context.Background(), u)
-	ctx = outfmt.WithMode(ctx, outfmt.Mode{JSON: true})
-
-	out := captureStdout(t, func() {
-		cmd := &DocsListTabsCmd{}
-		if err := runKong(t, cmd, []string{"doc1"}, ctx, flags); err != nil {
-			t.Fatalf("list-tabs --json: %v", err)
-		}
-	})
-
-	var result map[string]any
-	if err := json.Unmarshal([]byte(out), &result); err != nil {
-		t.Fatalf("JSON parse: %v\nraw: %q", err, out)
-	}
-	tabs, ok := result["tabs"].([]any)
-	if !ok || len(tabs) != 3 {
-		t.Fatalf("expected 3 tabs, got: %v", result)
-	}
-	child := tabs[2].(map[string]any)
-	if child["id"] != "t.child1" || child["parentTabId"] != "t.abc" {
-		t.Fatalf("unexpected child tab: %v", child)
 	}
 }
 

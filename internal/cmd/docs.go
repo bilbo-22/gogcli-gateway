@@ -3,6 +3,7 @@ package cmd
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -34,6 +35,9 @@ type DocsCmd struct {
 	Delete      DocsDeleteCmd      `cmd:"" name:"delete" help:"Delete text range from document"`
 	FindReplace DocsFindReplaceCmd `cmd:"" name:"find-replace" help:"Find and replace text in document"`
 	Update      DocsUpdateCmd      `cmd:"" name:"update" help:"Update content in a Google Doc"`
+	Edit        DocsEditCmd        `cmd:"" name:"edit" help:"Find and replace text in a Google Doc"`
+	Sed         DocsSedCmd         `cmd:"" name:"sed" help:"Regex find/replace (sed-style: s/pattern/replacement/g)"`
+	Clear       DocsClearCmd       `cmd:"" name:"clear" help:"Clear all content from a Google Doc"`
 }
 type DocsExportCmd struct {
 	DocID  string         `arg:"" name:"docId" help:"Doc ID"`
@@ -271,6 +275,7 @@ type DocsCatCmd struct {
 	MaxBytes int64  `name:"max-bytes" help:"Max bytes to read (0 = unlimited)" default:"2000000"`
 	Tab      string `name:"tab" help:"Tab title or ID to read (omit for default behavior)"`
 	AllTabs  bool   `name:"all-tabs" help:"Show all tabs with headers"`
+	Raw      bool   `name:"raw" help:"Output the raw Google Docs API JSON response without modifications"`
 }
 
 func (c *DocsCatCmd) Run(ctx context.Context, flags *RootFlags) error {
@@ -287,6 +292,33 @@ func (c *DocsCatCmd) Run(ctx context.Context, flags *RootFlags) error {
 	svc, err := newDocsService(ctx, account)
 	if err != nil {
 		return err
+	}
+
+	// --raw: dump the full Google Docs API response as JSON.
+	if c.Raw {
+		call := svc.Documents.Get(id).Context(ctx)
+		if c.Tab != "" || c.AllTabs {
+			call = call.IncludeTabsContent(true)
+		}
+		doc, rawErr := call.Do()
+		if rawErr != nil {
+			if isDocsNotFound(rawErr) {
+				return fmt.Errorf("doc not found or not a Google Doc (id=%s)", id)
+			}
+			return rawErr
+		}
+		raw, rawErr := doc.MarshalJSON()
+		if rawErr != nil {
+			return fmt.Errorf("marshalling raw response: %w", rawErr)
+		}
+		var buf bytes.Buffer
+		if indentErr := json.Indent(&buf, raw, "", "  "); indentErr != nil {
+			_, werr := os.Stdout.Write(raw)
+			return werr
+		}
+		buf.WriteByte('\n')
+		_, rawErr = buf.WriteTo(os.Stdout)
+		return rawErr
 	}
 
 	// Use tabs API when --tab or --all-tabs is specified.
@@ -884,6 +916,25 @@ func (c *DocsDeleteCmd) Run(ctx context.Context, flags *RootFlags) error {
 	u.Out().Printf("deleted\t%d characters", c.End-c.Start)
 	u.Out().Printf("range\t%d-%d", c.Start, c.End)
 	return nil
+}
+
+type DocsClearCmd struct {
+	DocID string `arg:"" name:"docId" help:"Doc ID"`
+}
+
+func (c *DocsClearCmd) Run(ctx context.Context, flags *RootFlags) error {
+	// Clear delegates to: gog docs sed <docId> 's/^$//'
+	// s/^$// with empty replacement on a non-empty doc = clear all content.
+	docID := strings.TrimSpace(c.DocID)
+	if docID == "" {
+		return usage("empty docId")
+	}
+
+	sedCmd := DocsSedCmd{
+		DocID:      docID,
+		Expression: `s/^$//`,
+	}
+	return sedCmd.Run(ctx, flags)
 }
 
 type DocsFindReplaceCmd struct {

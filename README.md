@@ -218,7 +218,7 @@ Fast, script-friendly CLI for Gmail, Calendar, Chat, Classroom, Drive, Docs, Sli
 - **Sheets** - read/write/update spreadsheets, insert rows/cols, format cells, read notes, create new sheets (and export via Drive)
 - **Forms** - create/get forms and inspect responses
 - **Apps Script** - create/get projects, inspect content, and run functions
-- **Docs/Slides** - export to PDF/DOCX/PPTX via Drive (plus create/copy, docs-to-text)
+- **Docs/Slides** - export to PDF/DOCX/PPTX via Drive (plus create/copy, docs-to-text, and **sedmat** sed-style document editing with Markdown formatting, images, and tables)
 - **People** - access profile information
 - **Keep (Workspace only)** - list/get/search notes and download attachments (service account + domain-wide delegation)
 - **Groups** - list groups you belong to, view group members (Google Workspace)
@@ -1342,7 +1342,31 @@ Note: Classroom commands require a Google Workspace for Education account. Perso
 gog docs export <docId> --format pdf --out ./doc.pdf
 gog docs export <docId> --format docx --out ./doc.docx
 gog docs export <docId> --format txt --out ./doc.txt
+
+# Sed-style regex editing with Markdown formatting (sedmat)
+gog docs sed <docId> 's/pattern/replacement/g'
+
+# Formatting in replacements
+gog docs sed <docId> 's/hello/**hello**/'          # bold
+gog docs sed <docId> 's/hello/*hello*/'             # italic
+gog docs sed <docId> 's/hello/~~hello~~/'           # strikethrough
+gog docs sed <docId> 's/hello/`hello`/'             # monospace
+gog docs sed <docId> 's/hello/__hello__/'           # underline
+gog docs sed <docId> 's/Google/[Google](https://google.com)/'  # link
+
+# Images
+gog docs sed <docId> 's/{{LOGO}}/![](https://example.com/logo.png)/'
+gog docs sed <docId> 's/{{HERO}}/![](https://example.com/hero.jpg){width=600}/'
+
+# Tables — create, populate, modify
+gog docs sed <docId> 's/{{TABLE}}/|3x4|/'            # create 3-row, 4-col table
+gog docs sed <docId> 's/|1|[A1]/**Name**/'           # set cell A1 (bold)
+gog docs sed <docId> 's/|1|[1,*]/**&**/'             # bold entire row 1
+gog docs sed <docId> 's/|1|[row:+2]//'               # insert row before row 2
+gog docs sed <docId> 's/|1|[col:$+]//'               # append column at end
 ```
+
+> See [docs/sedmat.md](docs/sedmat.md) for the full sedmat syntax reference.
 
 ### Slides
 

@@ -7,6 +7,11 @@ import (
 	"unicode/utf16"
 )
 
+const (
+	fmtBold       = "bold"
+	fmtBoldItalic = "bolditalic"
+)
+
 // MarkdownElementType represents the type of markdown element
 type MarkdownElementType int
 
@@ -348,7 +353,7 @@ func ParseInlineFormatting(text string) ([]TextStyle, string) {
 				Start:   idx[0],
 				End:     idx[1],
 				Content: text[idx[2]:idx[3]],
-				Type:    "bold",
+				Type:    fmtBold,
 			})
 		}
 	}
@@ -356,7 +361,7 @@ func ParseInlineFormatting(text string) ([]TextStyle, string) {
 	// For italic, we need to be careful not to match asterisks that are part of bold
 	boldPositions := make(map[int]bool)
 	for _, m := range matches {
-		if m.Type == "bold" || m.Type == "bolditalic" {
+		if m.Type == fmtBold || m.Type == fmtBoldItalic {
 			for i := m.Start; i <= m.End; i++ {
 				boldPositions[i] = true
 			}
@@ -440,8 +445,8 @@ func ParseInlineFormatting(text string) ([]TextStyle, string) {
 		styles = append(styles, TextStyle{
 			Start:  positionMap[m.Start],
 			End:    positionMap[m.End],
-			Bold:   m.Type == "bold" || m.Type == "bolditalic",
-			Italic: m.Type == "italic" || m.Type == "bolditalic",
+			Bold:   m.Type == fmtBold || m.Type == fmtBoldItalic,
+			Italic: m.Type == "italic" || m.Type == fmtBoldItalic,
 			Code:   m.Type == inlineTypeCode,
 			Link:   m.URL,
 		})

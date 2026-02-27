@@ -84,6 +84,8 @@ func TestAuthAddCmd_JSON(t *testing.T) {
 }
 
 func TestAuthAddCmd_KeychainError(t *testing.T) {
+	t.Setenv("GOG_KEYRING_BACKEND", "keychain")
+
 	origAuth := authorizeGoogle
 	origOpen := openSecretsStore
 	origKeychain := ensureKeychainAccess
