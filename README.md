@@ -1,9 +1,13 @@
 # gogcli-gateway
 
-A minimal fork of of [steipete/gogcli](https://github.com/steipete/gogcli) that inserts a control layer between the CLI and Google APIs.
+1. I like all of what [@steipete](https://github.com/steipete) is doing.
+2. I just don't trust the agents.
 
-It keeps the CLI surface the same.
-It changes where trust lives.
+A minimal fork of of [steipete/gogcli](https://github.com/steipete/gogcli) that inserts a control layer between the agent via the CLI and Google.
+
+It keeps the CLI surface the same (awesome for claws as we all know).
+But it changes where trust lives.
+Not with the claw, but with code the claw cannot touch, and with keys the claw cannot see.
 
 ---
 
