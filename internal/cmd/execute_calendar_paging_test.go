@@ -13,9 +13,6 @@ import (
 )
 
 func TestExecute_CalendarCalendars_MaxAndPage_JSON(t *testing.T) {
-	origNew := newCalendarService
-	t.Cleanup(func() { newCalendarService = origNew })
-
 	srv := httptest.NewServer(withPrimaryCalendar(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if !(strings.Contains(r.URL.Path, "calendarList") && r.Method == http.MethodGet) {
 			http.NotFound(w, r)
@@ -45,21 +42,17 @@ func TestExecute_CalendarCalendars_MaxAndPage_JSON(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewService: %v", err)
 	}
-	newCalendarService = func(context.Context, string) (*calendar.Service, error) { return svc, nil }
-
-	out := captureStdout(t, func() {
-		_ = captureStderr(t, func() {
-			if err := Execute([]string{
-				"--json",
-				"--account", "a@b.com",
-				"calendar", "calendars",
-				"--max", "1",
-				"--page", "p1",
-			}); err != nil {
-				t.Fatalf("Execute: %v", err)
-			}
-		})
-	})
+	result := executeWithCalendarTestService(t, []string{
+		"--json",
+		"--account", "a@b.com",
+		"calendar", "calendars",
+		"--max", "1",
+		"--page", "p1",
+	}, svc)
+	if result.err != nil {
+		t.Fatalf("Execute: %v", result.err)
+	}
+	out := result.stdout
 
 	var parsed struct {
 		Calendars []struct {
@@ -76,9 +69,6 @@ func TestExecute_CalendarCalendars_MaxAndPage_JSON(t *testing.T) {
 }
 
 func TestExecute_CalendarCalendars_AllPages_JSON(t *testing.T) {
-	origNew := newCalendarService
-	t.Cleanup(func() { newCalendarService = origNew })
-
 	page1Calls := 0
 	page2Calls := 0
 	srv := httptest.NewServer(withPrimaryCalendar(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -122,21 +112,17 @@ func TestExecute_CalendarCalendars_AllPages_JSON(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewService: %v", err)
 	}
-	newCalendarService = func(context.Context, string) (*calendar.Service, error) { return svc, nil }
-
-	out := captureStdout(t, func() {
-		_ = captureStderr(t, func() {
-			if err := Execute([]string{
-				"--json",
-				"--account", "a@b.com",
-				"calendar", "calendars",
-				"--max", "1",
-				"--all",
-			}); err != nil {
-				t.Fatalf("Execute: %v", err)
-			}
-		})
-	})
+	result := executeWithCalendarTestService(t, []string{
+		"--json",
+		"--account", "a@b.com",
+		"calendar", "calendars",
+		"--max", "1",
+		"--all",
+	}, svc)
+	if result.err != nil {
+		t.Fatalf("Execute: %v", result.err)
+	}
+	out := result.stdout
 
 	var parsed struct {
 		Calendars []struct {
@@ -156,9 +142,6 @@ func TestExecute_CalendarCalendars_AllPages_JSON(t *testing.T) {
 }
 
 func TestExecute_CalendarCalendars_FailEmpty_JSON(t *testing.T) {
-	origNew := newCalendarService
-	t.Cleanup(func() { newCalendarService = origNew })
-
 	srv := httptest.NewServer(withPrimaryCalendar(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if !(strings.Contains(r.URL.Path, "calendarList") && r.Method == http.MethodGet) {
 			http.NotFound(w, r)
@@ -180,25 +163,19 @@ func TestExecute_CalendarCalendars_FailEmpty_JSON(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewService: %v", err)
 	}
-	newCalendarService = func(context.Context, string) (*calendar.Service, error) { return svc, nil }
-
-	var execErr error
-	out := captureStdout(t, func() {
-		_ = captureStderr(t, func() {
-			execErr = Execute([]string{
-				"--json",
-				"--account", "a@b.com",
-				"calendar", "calendars",
-				"--fail-empty",
-			})
-		})
-	})
-	if execErr == nil {
+	result := executeWithCalendarTestService(t, []string{
+		"--json",
+		"--account", "a@b.com",
+		"calendar", "calendars",
+		"--fail-empty",
+	}, svc)
+	if result.err == nil {
 		t.Fatalf("expected error")
 	}
-	if got := ExitCode(execErr); got != emptyResultsExitCode {
+	if got := ExitCode(result.err); got != emptyResultsExitCode {
 		t.Fatalf("expected exit code %d, got %d", emptyResultsExitCode, got)
 	}
+	out := result.stdout
 
 	var parsed struct {
 		Calendars []struct {
@@ -215,9 +192,6 @@ func TestExecute_CalendarCalendars_FailEmpty_JSON(t *testing.T) {
 }
 
 func TestExecute_CalendarAcl_MaxAndPage_JSON(t *testing.T) {
-	origNew := newCalendarService
-	t.Cleanup(func() { newCalendarService = origNew })
-
 	srv := httptest.NewServer(withPrimaryCalendar(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if !(strings.Contains(r.URL.Path, "/calendars/c1@example.com/acl") && r.Method == http.MethodGet) {
 			http.NotFound(w, r)
@@ -247,21 +221,17 @@ func TestExecute_CalendarAcl_MaxAndPage_JSON(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewService: %v", err)
 	}
-	newCalendarService = func(context.Context, string) (*calendar.Service, error) { return svc, nil }
-
-	out := captureStdout(t, func() {
-		_ = captureStderr(t, func() {
-			if err := Execute([]string{
-				"--json",
-				"--account", "a@b.com",
-				"calendar", "acl", "c1@example.com",
-				"--max", "2",
-				"--page", "p2",
-			}); err != nil {
-				t.Fatalf("Execute: %v", err)
-			}
-		})
-	})
+	result := executeWithCalendarTestService(t, []string{
+		"--json",
+		"--account", "a@b.com",
+		"calendar", "acl", "c1@example.com",
+		"--max", "2",
+		"--page", "p2",
+	}, svc)
+	if result.err != nil {
+		t.Fatalf("Execute: %v", result.err)
+	}
+	out := result.stdout
 
 	var parsed struct {
 		NextPageToken string `json:"nextPageToken"`

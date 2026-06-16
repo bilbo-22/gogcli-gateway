@@ -707,7 +707,7 @@
             <h1>Google Accounts</h1>
             <p class="subtitle">Manage your connected accounts</p>
             <p class="setup-link">
-                <a href="https://github.com/steipete/gogcli#quick-start" target="_blank">
+                <a href="https://github.com/openclaw/gogcli#quick-start" target="_blank">
                     First time? Set up Google Cloud credentials →
                 </a>
             </p>
@@ -767,7 +767,7 @@
         <footer class="footer">
             <p>You can close this window and return to your terminal.</p>
             <p class="github-link">
-                <a href="https://github.com/steipete/gogcli" target="_blank">
+                <a href="https://github.com/openclaw/gogcli" target="_blank">
                     <span class="icon-github"></span>
                     View on GitHub
                 </a>
@@ -865,13 +865,13 @@
 
         function addAccount() {
             // Redirect to OAuth flow
-            window.location.href = '/auth/start';
+            window.location.href = '/auth/start?csrf=' + encodeURIComponent(csrfToken);
         }
 
         function upgradePermissions(email, event) {
             event.stopPropagation();
             // Redirect to OAuth flow with force consent to get all permissions
-            window.location.href = '/auth/upgrade?email=' + encodeURIComponent(email);
+            window.location.href = '/auth/upgrade?email=' + encodeURIComponent(email) + '&csrf=' + encodeURIComponent(csrfToken);
         }
 
         async function setDefault(email) {

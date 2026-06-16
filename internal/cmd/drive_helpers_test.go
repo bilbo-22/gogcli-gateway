@@ -10,24 +10,22 @@ import (
 )
 
 func TestResolveDriveDownloadDestPath(t *testing.T) {
-	home := t.TempDir()
-	t.Setenv("HOME", home)
-	t.Setenv("XDG_CONFIG_HOME", filepath.Join(home, "xdg"))
+	defaultDir := t.TempDir()
 
-	if _, err := resolveDriveDownloadDestPath(nil, ""); err == nil {
+	if _, err := resolveDriveDownloadDestPath(nil, "", defaultDir); err == nil {
 		t.Fatalf("expected error for nil meta")
 	}
 
-	if _, err := resolveDriveDownloadDestPath(&drive.File{Name: "x"}, ""); err == nil {
+	if _, err := resolveDriveDownloadDestPath(&drive.File{Name: "x"}, "", defaultDir); err == nil {
 		t.Fatalf("expected error for missing id")
 	}
 
-	if _, err := resolveDriveDownloadDestPath(&drive.File{Id: "id"}, ""); err == nil {
+	if _, err := resolveDriveDownloadDestPath(&drive.File{Id: "id"}, "", defaultDir); err == nil {
 		t.Fatalf("expected error for missing name")
 	}
 
 	meta := &drive.File{Id: "id1", Name: "../file.txt"}
-	path, err := resolveDriveDownloadDestPath(meta, "")
+	path, err := resolveDriveDownloadDestPath(meta, "", defaultDir)
 	if err != nil {
 		t.Fatalf("resolve: %v", err)
 	}
@@ -37,7 +35,7 @@ func TestResolveDriveDownloadDestPath(t *testing.T) {
 	}
 
 	meta.Name = ".."
-	path, err = resolveDriveDownloadDestPath(meta, "")
+	path, err = resolveDriveDownloadDestPath(meta, "", defaultDir)
 	if err != nil {
 		t.Fatalf("resolve default: %v", err)
 	}
@@ -47,7 +45,7 @@ func TestResolveDriveDownloadDestPath(t *testing.T) {
 	}
 
 	dir := t.TempDir()
-	path, err = resolveDriveDownloadDestPath(meta, dir)
+	path, err = resolveDriveDownloadDestPath(meta, dir, defaultDir)
 	if err != nil {
 		t.Fatalf("resolve dir: %v", err)
 	}
@@ -57,7 +55,7 @@ func TestResolveDriveDownloadDestPath(t *testing.T) {
 	}
 
 	outFile := filepath.Join(t.TempDir(), "custom.bin")
-	path, err = resolveDriveDownloadDestPath(meta, outFile)
+	path, err = resolveDriveDownloadDestPath(meta, outFile, defaultDir)
 	if err != nil {
 		t.Fatalf("resolve file: %v", err)
 	}

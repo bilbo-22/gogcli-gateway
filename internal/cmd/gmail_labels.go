@@ -3,7 +3,6 @@ package cmd
 import (
 	"context"
 	"fmt"
-	"os"
 	"strings"
 
 	"google.golang.org/api/gmail/v1"
@@ -16,6 +15,8 @@ type GmailLabelsCmd struct {
 	List   GmailLabelsListCmd   `cmd:"" name:"list" aliases:"ls" help:"List labels"`
 	Get    GmailLabelsGetCmd    `cmd:"" name:"get" aliases:"info,show" help:"Get label details (including counts)"`
 	Create GmailLabelsCreateCmd `cmd:"" name:"create" aliases:"add,new" help:"Create a new label"`
+	Rename GmailLabelsRenameCmd `cmd:"" name:"rename" aliases:"mv" help:"Rename a label"`
+	Style  GmailLabelsStyleCmd  `cmd:"" name:"style" aliases:"color,colour" help:"Change a user label color or visibility"`
 	Modify GmailLabelsModifyCmd `cmd:"" name:"modify" aliases:"update,edit,set" help:"Modify labels on threads"`
 	Delete GmailLabelsDeleteCmd `cmd:"" name:"delete" aliases:"rm,del" help:"Delete a label"`
 }
@@ -30,7 +31,7 @@ func (c *GmailLabelsGetCmd) Run(ctx context.Context, flags *RootFlags) error {
 		return err
 	}
 
-	svc, err := newGmailService(ctx, account)
+	svc, err := gmailService(ctx, account)
 	if err != nil {
 		return err
 	}
@@ -44,7 +45,9 @@ func (c *GmailLabelsGetCmd) Run(ctx context.Context, flags *RootFlags) error {
 		return usage("empty label")
 	}
 	id := raw
-	if v, ok := idMap[strings.ToLower(raw)]; ok {
+	if v, ok := idMap[raw]; ok {
+		id = v
+	} else if v, ok := idMap[strings.ToLower(raw)]; ok {
 		id = v
 	}
 
@@ -53,16 +56,16 @@ func (c *GmailLabelsGetCmd) Run(ctx context.Context, flags *RootFlags) error {
 		return err
 	}
 	if outfmt.IsJSON(ctx) {
-		return outfmt.WriteJSON(ctx, os.Stdout, map[string]any{"label": l})
+		return outfmt.WriteJSON(ctx, stdoutWriter(ctx), map[string]any{"label": l})
 	}
 	u := ui.FromContext(ctx)
-	u.Out().Printf("id\t%s", l.Id)
-	u.Out().Printf("name\t%s", l.Name)
-	u.Out().Printf("type\t%s", l.Type)
-	u.Out().Printf("messages_total\t%d", l.MessagesTotal)
-	u.Out().Printf("messages_unread\t%d", l.MessagesUnread)
-	u.Out().Printf("threads_total\t%d", l.ThreadsTotal)
-	u.Out().Printf("threads_unread\t%d", l.ThreadsUnread)
+	u.Out().Linef("id\t%s", l.Id)
+	u.Out().Linef("name\t%s", l.Name)
+	u.Out().Linef("type\t%s", l.Type)
+	u.Out().Linef("messages_total\t%d", l.MessagesTotal)
+	u.Out().Linef("messages_unread\t%d", l.MessagesUnread)
+	u.Out().Linef("threads_total\t%d", l.ThreadsTotal)
+	u.Out().Linef("threads_unread\t%d", l.ThreadsUnread)
 	return nil
 }
 
@@ -72,17 +75,23 @@ type GmailLabelsCreateCmd struct {
 
 func (c *GmailLabelsCreateCmd) Run(ctx context.Context, flags *RootFlags) error {
 	u := ui.FromContext(ctx)
-	account, err := requireAccount(flags)
-	if err != nil {
-		return err
-	}
-
 	name := strings.TrimSpace(c.Name)
 	if name == "" {
 		return usage("label name is required")
 	}
 
-	svc, err := newGmailService(ctx, account)
+	if err := dryRunExit(ctx, flags, "gmail.labels.create", map[string]any{
+		"name": name,
+	}); err != nil {
+		return err
+	}
+
+	account, err := requireAccount(flags)
+	if err != nil {
+		return err
+	}
+
+	svc, err := gmailService(ctx, account)
 	if err != nil {
 		return err
 	}
@@ -98,9 +107,9 @@ func (c *GmailLabelsCreateCmd) Run(ctx context.Context, flags *RootFlags) error 
 	}
 
 	if outfmt.IsJSON(ctx) {
-		return outfmt.WriteJSON(ctx, os.Stdout, map[string]any{"label": label})
+		return outfmt.WriteJSON(ctx, stdoutWriter(ctx), map[string]any{"label": label})
 	}
-	u.Out().Printf("Created label: %s (id: %s)", label.Name, label.Id)
+	u.Out().Linef("Created label: %s (id: %s)", label.Name, label.Id)
 	return nil
 }
 
@@ -112,6 +121,167 @@ func createLabel(ctx context.Context, svc *gmail.Service, name string) (*gmail.L
 	}).Context(ctx).Do()
 }
 
+type GmailLabelsRenameCmd struct {
+	Label   string `arg:"" name:"labelIdOrName" help:"Current label ID or name"`
+	NewName string `arg:"" name:"newName" help:"New label name"`
+}
+
+func (c *GmailLabelsRenameCmd) Run(ctx context.Context, flags *RootFlags) error {
+	u := ui.FromContext(ctx)
+	oldRaw := strings.TrimSpace(c.Label)
+	if oldRaw == "" {
+		return usage("label is required")
+	}
+	newName := strings.TrimSpace(c.NewName)
+	if newName == "" {
+		return usage("new name is required")
+	}
+
+	if exit := dryRunExit(ctx, flags, "gmail.labels.rename", map[string]string{
+		"label":   oldRaw,
+		"newName": newName,
+	}); exit != nil {
+		return exit
+	}
+
+	account, err := requireAccount(flags)
+	if err != nil {
+		return err
+	}
+	svc, err := gmailService(ctx, account)
+	if err != nil {
+		return err
+	}
+
+	label, err := resolveMutableGmailLabel(ctx, svc, oldRaw)
+	if err != nil {
+		return err
+	}
+
+	if label.Type == "system" {
+		return usagef("cannot rename system label %q", label.Name)
+	}
+
+	if validateErr := ensureLabelNameAvailable(svc, newName); validateErr != nil {
+		return validateErr
+	}
+
+	updated, err := svc.Users.Labels.Patch("me", label.Id, &gmail.Label{
+		Name: newName,
+	}).Context(ctx).Do()
+	if err != nil {
+		return mapLabelCreateError(err, newName)
+	}
+
+	if outfmt.IsJSON(ctx) {
+		return outfmt.WriteJSON(ctx, stdoutWriter(ctx), map[string]any{"label": updated})
+	}
+	u.Out().Linef("Renamed label: %s → %s (id: %s)", label.Name, updated.Name, updated.Id)
+	return nil
+}
+
+type GmailLabelsStyleCmd struct {
+	Label                 string `arg:"" name:"labelIdOrName" help:"User label ID or name"`
+	TextColor             string `name:"text-color" help:"Text color from Gmail's label palette as #RRGGBB"`
+	BackgroundColor       string `name:"background-color" help:"Background color from Gmail's label palette as #RRGGBB"`
+	LabelListVisibility   string `name:"label-list-visibility" help:"Label-list visibility: labelShow|labelShowIfUnread|labelHide"`
+	MessageListVisibility string `name:"message-list-visibility" help:"Message-list visibility: show|hide"`
+}
+
+func (c *GmailLabelsStyleCmd) Run(ctx context.Context, flags *RootFlags) error {
+	u := ui.FromContext(ctx)
+	labelRaw := strings.TrimSpace(c.Label)
+	if labelRaw == "" {
+		return usage("label is required")
+	}
+	textColor, err := normalizeGmailLabelHexColor(c.TextColor, "--text-color")
+	if err != nil {
+		return err
+	}
+	backgroundColor, err := normalizeGmailLabelHexColor(c.BackgroundColor, "--background-color")
+	if err != nil {
+		return err
+	}
+	if textColor == "" && backgroundColor == "" && c.LabelListVisibility == "" && c.MessageListVisibility == "" {
+		return usage("specify at least one style field")
+	}
+	if validateErr := validateGmailLabelVisibility(c.LabelListVisibility, "--label-list-visibility", "labelShow", "labelShowIfUnread", "labelHide"); validateErr != nil {
+		return validateErr
+	}
+	if validateErr := validateGmailLabelVisibility(c.MessageListVisibility, "--message-list-visibility", "show", "hide"); validateErr != nil {
+		return validateErr
+	}
+
+	if exit := dryRunExit(ctx, flags, "gmail.labels.style", map[string]any{
+		"label":                 labelRaw,
+		"textColor":             textColor,
+		"backgroundColor":       backgroundColor,
+		"labelListVisibility":   c.LabelListVisibility,
+		"messageListVisibility": c.MessageListVisibility,
+	}); exit != nil {
+		return exit
+	}
+
+	account, err := requireAccount(flags)
+	if err != nil {
+		return err
+	}
+	svc, err := gmailService(ctx, account)
+	if err != nil {
+		return err
+	}
+
+	label, err := resolveMutableGmailLabel(ctx, svc, c.Label)
+	if err != nil {
+		return err
+	}
+	if label.Type == "system" {
+		return usagef("cannot style system label %q", label.Name)
+	}
+
+	patch := &gmail.Label{
+		LabelListVisibility:   strings.TrimSpace(c.LabelListVisibility),
+		MessageListVisibility: strings.TrimSpace(c.MessageListVisibility),
+	}
+	if textColor != "" || backgroundColor != "" {
+		color := &gmail.LabelColor{}
+		if label.Color != nil {
+			color.TextColor = label.Color.TextColor
+			color.BackgroundColor = label.Color.BackgroundColor
+		}
+		if textColor != "" {
+			color.TextColor = textColor
+		}
+		if backgroundColor != "" {
+			color.BackgroundColor = backgroundColor
+		}
+		patch.Color = color
+	}
+
+	updated, err := svc.Users.Labels.Patch("me", label.Id, patch).Context(ctx).Do()
+	if err != nil {
+		return err
+	}
+	if outfmt.IsJSON(ctx) {
+		return outfmt.WriteJSON(ctx, stdoutWriter(ctx), map[string]any{"label": updated})
+	}
+	u.Out().Linef("Styled label: %s (id: %s)", updated.Name, updated.Id)
+	return nil
+}
+
+func validateGmailLabelVisibility(value, field string, allowed ...string) error {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return nil
+	}
+	for _, candidate := range allowed {
+		if value == candidate {
+			return nil
+		}
+	}
+	return usagef("%s must be one of: %s", field, strings.Join(allowed, ", "))
+}
+
 type GmailLabelsListCmd struct{}
 
 func (c *GmailLabelsListCmd) Run(ctx context.Context, flags *RootFlags) error {
@@ -121,7 +291,7 @@ func (c *GmailLabelsListCmd) Run(ctx context.Context, flags *RootFlags) error {
 		return err
 	}
 
-	svc, err := newGmailService(ctx, account)
+	svc, err := gmailService(ctx, account)
 	if err != nil {
 		return err
 	}
@@ -131,20 +301,14 @@ func (c *GmailLabelsListCmd) Run(ctx context.Context, flags *RootFlags) error {
 		return err
 	}
 	if outfmt.IsJSON(ctx) {
-		return outfmt.WriteJSON(ctx, os.Stdout, map[string]any{"labels": resp.Labels})
+		return outfmt.WriteJSON(ctx, stdoutWriter(ctx), map[string]any{"labels": resp.Labels})
 	}
 	if len(resp.Labels) == 0 {
 		u.Err().Println("No labels")
 		return nil
 	}
 
-	w, flush := tableWriter(ctx)
-	defer flush()
-	fmt.Fprintln(w, "ID\tNAME\tTYPE")
-	for _, l := range resp.Labels {
-		fmt.Fprintf(w, "%s\t%s\t%s\n", l.Id, l.Name, l.Type)
-	}
-	return nil
+	return outfmt.WriteTable(ctx, stdoutWriter(ctx), compactGmailRows(resp.Labels), gmailLabelColumns())
 }
 
 type GmailLabelsModifyCmd struct {
@@ -155,18 +319,30 @@ type GmailLabelsModifyCmd struct {
 
 func (c *GmailLabelsModifyCmd) Run(ctx context.Context, flags *RootFlags) error {
 	u := ui.FromContext(ctx)
-	account, err := requireAccount(flags)
-	if err != nil {
-		return err
-	}
 	threadIDs := c.ThreadIDs
+	if len(threadIDs) == 0 {
+		return usage("missing threadId")
+	}
 	addLabels := splitCSV(c.Add)
 	removeLabels := splitCSV(c.Remove)
 	if len(addLabels) == 0 && len(removeLabels) == 0 {
 		return usage("must specify --add and/or --remove")
 	}
 
-	svc, err := newGmailService(ctx, account)
+	if err := dryRunExit(ctx, flags, "gmail.labels.modify", map[string]any{
+		"thread_ids": threadIDs,
+		"add":        addLabels,
+		"remove":     removeLabels,
+	}); err != nil {
+		return err
+	}
+
+	account, err := requireAccount(flags)
+	if err != nil {
+		return err
+	}
+
+	svc, err := gmailService(ctx, account)
 	if err != nil {
 		return err
 	}
@@ -200,11 +376,11 @@ func (c *GmailLabelsModifyCmd) Run(ctx context.Context, flags *RootFlags) error 
 		}
 		results = append(results, result{ThreadID: tid, Success: true})
 		if !outfmt.IsJSON(ctx) {
-			u.Out().Printf("%s\tok", tid)
+			u.Out().Linef("%s\tok", tid)
 		}
 	}
 	if outfmt.IsJSON(ctx) {
-		return outfmt.WriteJSON(ctx, os.Stdout, map[string]any{"results": results})
+		return outfmt.WriteJSON(ctx, stdoutWriter(ctx), map[string]any{"results": results})
 	}
 	return nil
 }
@@ -219,7 +395,7 @@ func fetchLabelNameToID(svc *gmail.Service) (map[string]string, error) {
 		if l.Id == "" {
 			continue
 		}
-		m[strings.ToLower(l.Id)] = l.Id
+		m[l.Id] = l.Id
 		if l.Name != "" {
 			m[strings.ToLower(l.Name)] = l.Id
 		}
@@ -248,45 +424,34 @@ type GmailLabelsDeleteCmd struct {
 
 func (c *GmailLabelsDeleteCmd) Run(ctx context.Context, flags *RootFlags) error {
 	u := ui.FromContext(ctx)
+	raw := strings.TrimSpace(c.Label)
+	if raw == "" {
+		return usage("label is required")
+	}
+	if dryRunErr := dryRunExit(ctx, flags, "gmail.labels.delete", map[string]any{
+		"label": raw,
+	}); dryRunErr != nil {
+		return dryRunErr
+	}
+
 	account, err := requireAccount(flags)
 	if err != nil {
 		return err
 	}
 
-	svc, err := newGmailService(ctx, account)
+	svc, err := gmailService(ctx, account)
 	if err != nil {
 		return err
 	}
 
-	raw := strings.TrimSpace(c.Label)
-	if raw == "" {
-		return usage("empty label")
-	}
-
-	// For destructive operations, try exact ID match first before name lookup.
-	label, err := svc.Users.Labels.Get("me", raw).Context(ctx).Do()
+	label, err := resolveMutableGmailLabel(ctx, svc, c.Label)
 	if err != nil {
-		if !isNotFoundAPIError(err) {
-			return err
-		}
-		// Exact ID not found; resolve by label name only.
-		idMap, mapErr := fetchLabelNameOnlyToID(svc)
-		if mapErr != nil {
-			return mapErr
-		}
-		id, ok := idMap[strings.ToLower(raw)]
-		if !ok {
-			return fmt.Errorf("label not found: %s", raw)
-		}
-		label, err = svc.Users.Labels.Get("me", id).Context(ctx).Do()
-		if err != nil {
-			return err
-		}
+		return err
 	}
 
 	// System labels cannot be deleted
 	if label.Type == "system" {
-		return fmt.Errorf("cannot delete system label %q", label.Name)
+		return usagef("cannot delete system label %q", label.Name)
 	}
 
 	if confirmErr := confirmDestructive(ctx, flags, fmt.Sprintf("delete label %q", label.Name)); confirmErr != nil {

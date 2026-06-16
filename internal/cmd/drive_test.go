@@ -32,6 +32,27 @@ func TestBuildDriveListQuery(t *testing.T) {
 	})
 }
 
+func TestBuildDriveAllListQuery(t *testing.T) {
+	tests := []struct {
+		name     string
+		query    string
+		expected string
+	}{
+		{"empty query", "", "trashed = false"},
+		{"with query", "mimeType='image/png'", "mimeType='image/png' and trashed = false"},
+		{"query mentions trashed", "trashed = true", "trashed = true"},
+		{"quoted trashed string", "name contains 'trashed'", "name contains 'trashed' and trashed = false"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := buildDriveAllListQuery(tt.query)
+			if got != tt.expected {
+				t.Errorf("buildDriveAllListQuery(%q) = %q, want %q", tt.query, got, tt.expected)
+			}
+		})
+	}
+}
+
 func TestBuildDriveSearchQuery(t *testing.T) {
 	got := buildDriveSearchQuery("hello world", false)
 	if got != "fullText contains 'hello world' and trashed = false" {

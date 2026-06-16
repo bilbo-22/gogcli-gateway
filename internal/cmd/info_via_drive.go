@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"os"
 	"strings"
 
 	"github.com/steipete/gogcli/internal/outfmt"
@@ -35,7 +34,7 @@ func infoViaDrive(ctx context.Context, flags *RootFlags, opts infoViaDriveOption
 		return usage(fmt.Sprintf("empty %s", argName))
 	}
 
-	svc, err := newDriveService(ctx, account)
+	svc, err := driveService(ctx, account)
 	if err != nil {
 		return err
 	}
@@ -60,23 +59,23 @@ func infoViaDrive(ctx context.Context, flags *RootFlags, opts infoViaDriveOption
 	}
 
 	if outfmt.IsJSON(ctx) {
-		return outfmt.WriteJSON(ctx, os.Stdout, map[string]any{strFile: f})
+		return outfmt.WriteJSON(ctx, stdoutWriter(ctx), map[string]any{strFile: f})
 	}
 
-	u.Out().Printf("id\t%s", f.Id)
-	u.Out().Printf("name\t%s", f.Name)
-	u.Out().Printf("mime\t%s", f.MimeType)
+	u.Out().Linef("id\t%s", f.Id)
+	u.Out().Linef("name\t%s", f.Name)
+	u.Out().Linef("mime\t%s", f.MimeType)
 	if f.WebViewLink != "" {
-		u.Out().Printf("link\t%s", f.WebViewLink)
+		u.Out().Linef("link\t%s", f.WebViewLink)
 	}
 	if f.CreatedTime != "" {
-		u.Out().Printf("created\t%s", f.CreatedTime)
+		u.Out().Linef("created\t%s", f.CreatedTime)
 	}
 	if f.ModifiedTime != "" {
-		u.Out().Printf("modified\t%s", f.ModifiedTime)
+		u.Out().Linef("modified\t%s", f.ModifiedTime)
 	}
 	if len(f.Parents) > 0 {
-		u.Out().Printf("parents\t%s", strings.Join(f.Parents, ","))
+		u.Out().Linef("parents\t%s", strings.Join(f.Parents, ","))
 	}
 	return nil
 }

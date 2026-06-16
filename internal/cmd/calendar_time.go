@@ -2,7 +2,6 @@ package cmd
 
 import (
 	"context"
-	"os"
 	"time"
 
 	"github.com/steipete/gogcli/internal/outfmt"
@@ -21,11 +20,20 @@ func (c *CalendarTimeCmd) Run(ctx context.Context, flags *RootFlags) error {
 		return err
 	}
 
+	store, err := commandConfigStore(ctx)
+	if err != nil {
+		return err
+	}
+	calendarID, err := prepareCalendarID(store, c.CalendarID, true)
+	if err != nil {
+		return err
+	}
+
 	var tz string
 	var loc *time.Location
 
 	// Check for explicitly configured timezone (flag, env, or config)
-	loc, err = getConfiguredTimezone(c.Timezone)
+	loc, err = getConfiguredTimezone(ctx, c.Timezone, stderrWriter(ctx))
 	if err != nil {
 		return err
 	}
@@ -35,14 +43,14 @@ func (c *CalendarTimeCmd) Run(ctx context.Context, flags *RootFlags) error {
 		tz = loc.String()
 	} else {
 		// Fall back to Google Calendar's timezone
-		svc, err := newCalendarService(ctx, account)
+		svc, err := calendarService(ctx, account)
 		if err != nil {
 			return err
 		}
 
-		calendarID, resolveErr := resolveCalendarID(ctx, svc, c.CalendarID)
-		if resolveErr != nil {
-			return resolveErr
+		calendarID, err = resolveCalendarSelector(ctx, store, svc, calendarID, true)
+		if err != nil {
+			return err
 		}
 		tz, loc, err = getCalendarLocation(ctx, svc, calendarID)
 		if err != nil {
@@ -54,15 +62,15 @@ func (c *CalendarTimeCmd) Run(ctx context.Context, flags *RootFlags) error {
 	formatted := now.Format("Monday, January 02, 2006 03:04 PM")
 
 	if outfmt.IsJSON(ctx) {
-		return outfmt.WriteJSON(ctx, os.Stdout, map[string]any{
+		return outfmt.WriteJSON(ctx, stdoutWriter(ctx), map[string]any{
 			"timezone":     tz,
 			"current_time": now.Format(time.RFC3339),
 			"formatted":    formatted,
 		})
 	}
 
-	u.Out().Printf("timezone\t%s", tz)
-	u.Out().Printf("current_time\t%s", now.Format(time.RFC3339))
-	u.Out().Printf("formatted\t%s", formatted)
+	u.Out().Linef("timezone\t%s", tz)
+	u.Out().Linef("current_time\t%s", now.Format(time.RFC3339))
+	u.Out().Linef("formatted\t%s", formatted)
 	return nil
 }

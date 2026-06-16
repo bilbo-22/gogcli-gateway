@@ -4,19 +4,14 @@ import (
 	"context"
 	"fmt"
 	"io"
-	"os"
-	"path/filepath"
 	"strings"
 
 	keepapi "google.golang.org/api/keep/v1"
 
 	"github.com/steipete/gogcli/internal/config"
-	"github.com/steipete/gogcli/internal/googleapi"
 	"github.com/steipete/gogcli/internal/outfmt"
 	"github.com/steipete/gogcli/internal/ui"
 )
-
-var newKeepServiceWithSA = googleapi.NewKeepWithServiceAccount
 
 type KeepCmd struct {
 	ServiceAccount string `name:"service-account" help:"Path to service account JSON file"`
@@ -25,6 +20,8 @@ type KeepCmd struct {
 	List       KeepListCmd       `cmd:"" default:"withargs" help:"List notes"`
 	Get        KeepGetCmd        `cmd:"" name:"get" help:"Get a note"`
 	Search     KeepSearchCmd     `cmd:"" name:"search" help:"Search notes by text (client-side)"`
+	Create     KeepCreateCmd     `cmd:"" name:"create" help:"Create a new note"`
+	Delete     KeepDeleteCmd     `cmd:"" name:"delete" help:"Delete a note"`
 	Attachment KeepAttachmentCmd `cmd:"" name:"attachment" help:"Download an attachment"`
 }
 
@@ -38,6 +35,9 @@ type KeepListCmd struct {
 
 func (c *KeepListCmd) Run(ctx context.Context, flags *RootFlags, keep *KeepCmd) error {
 	u := ui.FromContext(ctx)
+	if c.Max <= 0 {
+		return usage("max must be > 0")
+	}
 
 	svc, err := getKeepService(ctx, flags, keep)
 	if err != nil {
@@ -59,24 +59,13 @@ func (c *KeepListCmd) Run(ctx context.Context, flags *RootFlags, keep *KeepCmd) 
 		return resp.Notes, resp.NextPageToken, nil
 	}
 
-	var notes []*keepapi.Note
-	nextPageToken := ""
-	if c.All {
-		all, err := collectAllPages(c.Page, fetch)
-		if err != nil {
-			return err
-		}
-		notes = all
-	} else {
-		var err error
-		notes, nextPageToken, err = fetch(c.Page)
-		if err != nil {
-			return err
-		}
+	notes, nextPageToken, err := loadPagedItems(c.Page, c.All, fetch)
+	if err != nil {
+		return err
 	}
 
 	if outfmt.IsJSON(ctx) {
-		if err := outfmt.WriteJSON(ctx, os.Stdout, map[string]any{
+		if err := outfmt.WriteJSON(ctx, stdoutWriter(ctx), map[string]any{
 			"notes":         notes,
 			"nextPageToken": nextPageToken,
 		}); err != nil {
@@ -103,7 +92,7 @@ func (c *KeepListCmd) Run(ctx context.Context, flags *RootFlags, keep *KeepCmd) 
 		}
 		fmt.Fprintf(w, "%s\t%s\t%s\n", n.Name, title, n.UpdateTime)
 	}
-	printNextPageHint(u, nextPageToken)
+	printNextPageHintWithAll(u, nextPageToken, "--all/--all-pages")
 	return nil
 }
 
@@ -141,7 +130,10 @@ func (c *KeepSearchCmd) Run(ctx context.Context, flags *RootFlags, keep *KeepCmd
 	u := ui.FromContext(ctx)
 
 	if strings.TrimSpace(c.Query) == "" {
-		return fmt.Errorf("search query cannot be empty")
+		return usage("search query cannot be empty")
+	}
+	if c.Max <= 0 {
+		return usage("max must be > 0")
 	}
 
 	svc, err := getKeepService(ctx, flags, keep)
@@ -174,7 +166,7 @@ func (c *KeepSearchCmd) Run(ctx context.Context, flags *RootFlags, keep *KeepCmd
 	}
 
 	if outfmt.IsJSON(ctx) {
-		return outfmt.WriteJSON(ctx, os.Stdout, map[string]any{
+		return outfmt.WriteJSON(ctx, stdoutWriter(ctx), map[string]any{
 			"notes": allNotes,
 			"query": c.Query,
 			"count": len(allNotes),
@@ -182,7 +174,7 @@ func (c *KeepSearchCmd) Run(ctx context.Context, flags *RootFlags, keep *KeepCmd
 	}
 
 	if len(allNotes) == 0 {
-		u.Err().Printf("No notes matching %q", c.Query)
+		u.Err().Linef("No notes matching %q", c.Query)
 		return nil
 	}
 
@@ -196,7 +188,7 @@ func (c *KeepSearchCmd) Run(ctx context.Context, flags *RootFlags, keep *KeepCmd
 		}
 		fmt.Fprintf(w, "%s\t%s\t%s\n", n.Name, title, n.UpdateTime)
 	}
-	u.Err().Printf("Found %d notes matching %q", len(allNotes), c.Query)
+	u.Err().Linef("Found %d notes matching %q", len(allNotes), c.Query)
 	return nil
 }
 
@@ -223,23 +215,23 @@ func (c *KeepGetCmd) Run(ctx context.Context, flags *RootFlags, keep *KeepCmd) e
 	}
 
 	if outfmt.IsJSON(ctx) {
-		return outfmt.WriteJSON(ctx, os.Stdout, map[string]any{"note": note})
+		return outfmt.WriteJSON(ctx, stdoutWriter(ctx), map[string]any{"note": note})
 	}
 
-	u.Out().Printf("name\t%s", note.Name)
-	u.Out().Printf("title\t%s", note.Title)
-	u.Out().Printf("created\t%s", note.CreateTime)
-	u.Out().Printf("updated\t%s", note.UpdateTime)
-	u.Out().Printf("trashed\t%v", note.Trashed)
+	u.Out().Linef("name\t%s", note.Name)
+	u.Out().Linef("title\t%s", note.Title)
+	u.Out().Linef("created\t%s", note.CreateTime)
+	u.Out().Linef("updated\t%s", note.UpdateTime)
+	u.Out().Linef("trashed\t%v", note.Trashed)
 	if note.Body != nil && note.Body.Text != nil {
 		u.Out().Println("")
 		u.Out().Println(note.Body.Text.Text)
 	}
 	if len(note.Attachments) > 0 {
 		u.Out().Println("")
-		u.Out().Printf("attachments\t%d", len(note.Attachments))
+		u.Out().Linef("attachments\t%d", len(note.Attachments))
 		for _, a := range note.Attachments {
-			u.Out().Printf("  %s\t%s", a.Name, a.MimeType)
+			u.Out().Linef("  %s\t%s", a.Name, a.MimeType)
 		}
 	}
 	return nil
@@ -256,7 +248,7 @@ func (c *KeepAttachmentCmd) Run(ctx context.Context, flags *RootFlags, keep *Kee
 
 	name := strings.TrimSpace(c.AttachmentName)
 	if !strings.Contains(name, "/attachments/") {
-		return fmt.Errorf("invalid attachment name format, expected: notes/<noteId>/attachments/<attachmentId>")
+		return usage("invalid attachment name format, expected: notes/<noteId>/attachments/<attachmentId>")
 	}
 
 	outPath := strings.TrimSpace(c.Out)
@@ -290,13 +282,7 @@ func (c *KeepAttachmentCmd) Run(ctx context.Context, flags *RootFlags, keep *Kee
 	}
 	defer resp.Body.Close()
 
-	if dir := filepath.Dir(outPath); dir != "." {
-		if mkdirErr := os.MkdirAll(dir, 0o700); mkdirErr != nil && !os.IsExist(mkdirErr) {
-			return fmt.Errorf("create output directory: %w", mkdirErr)
-		}
-	}
-
-	f, err := os.Create(outPath) //nolint:gosec // user-provided output path
+	f, outPath, err := createUserOutputFile(outPath)
 	if err != nil {
 		return fmt.Errorf("create output file: %w", err)
 	}
@@ -308,16 +294,126 @@ func (c *KeepAttachmentCmd) Run(ctx context.Context, flags *RootFlags, keep *Kee
 	}
 
 	if outfmt.IsJSON(ctx) {
-		return outfmt.WriteJSON(ctx, os.Stdout, map[string]any{
+		return outfmt.WriteJSON(ctx, stdoutWriter(ctx), map[string]any{
 			"downloaded": true,
 			"path":       outPath,
 			"bytes":      written,
 		})
 	}
 
-	u.Out().Printf("path\t%s", outPath)
-	u.Out().Printf("bytes\t%d", written)
+	u.Out().Linef("path\t%s", outPath)
+	u.Out().Linef("bytes\t%d", written)
 	return nil
+}
+
+type KeepCreateCmd struct {
+	Title string   `name:"title" help:"Note title"`
+	Text  string   `name:"text" help:"Note body text"`
+	Item  []string `name:"item" help:"List item text (repeatable; creates a checklist note)"`
+}
+
+func (c *KeepCreateCmd) Run(ctx context.Context, flags *RootFlags, keep *KeepCmd) error {
+	u := ui.FromContext(ctx)
+
+	title := strings.TrimSpace(c.Title)
+	text := strings.TrimSpace(c.Text)
+
+	if text == "" && len(c.Item) == 0 {
+		return usage("provide --text or at least one --item")
+	}
+	if text != "" && len(c.Item) > 0 {
+		return usage("--text and --item are mutually exclusive")
+	}
+
+	items := make([]string, 0, len(c.Item))
+	for _, raw := range c.Item {
+		item := strings.TrimSpace(raw)
+		if item == "" {
+			return usage("--item cannot be empty")
+		}
+		items = append(items, item)
+	}
+
+	if dryRunErr := dryRunExit(ctx, flags, "keep.create", map[string]any{
+		"title": title,
+		"text":  text,
+		"items": items,
+	}); dryRunErr != nil {
+		return dryRunErr
+	}
+
+	svc, err := getKeepService(ctx, flags, keep)
+	if err != nil {
+		return err
+	}
+
+	note := &keepapi.Note{Title: title}
+
+	if text != "" {
+		note.Body = &keepapi.Section{
+			Text: &keepapi.TextContent{Text: text},
+		}
+	} else {
+		listItems := make([]*keepapi.ListItem, 0, len(items))
+		for _, item := range items {
+			listItems = append(listItems, &keepapi.ListItem{
+				Text: &keepapi.TextContent{Text: item},
+			})
+		}
+		note.Body = &keepapi.Section{
+			List: &keepapi.ListContent{ListItems: listItems},
+		}
+	}
+
+	created, err := svc.Notes.Create(note).Context(ctx).Do()
+	if err != nil {
+		return err
+	}
+
+	if outfmt.IsJSON(ctx) {
+		return outfmt.WriteJSON(ctx, stdoutWriter(ctx), map[string]any{"note": created})
+	}
+
+	u.Out().Linef("name\t%s", created.Name)
+	u.Out().Linef("title\t%s", created.Title)
+	u.Out().Linef("created\t%s", created.CreateTime)
+	return nil
+}
+
+type KeepDeleteCmd struct {
+	NoteID string `arg:"" name:"noteId" help:"Note ID or name (e.g. notes/abc123)"`
+}
+
+func (c *KeepDeleteCmd) Run(ctx context.Context, flags *RootFlags, keep *KeepCmd) error {
+	u := ui.FromContext(ctx)
+
+	name := strings.TrimSpace(c.NoteID)
+	if name == "" {
+		return usage("empty noteId")
+	}
+	if !strings.HasPrefix(name, "notes/") {
+		name = "notes/" + name
+	}
+
+	if confirmErr := dryRunAndConfirmDestructive(ctx, flags, "keep.delete", map[string]any{
+		"name": name,
+	}, fmt.Sprintf("delete note %s", name)); confirmErr != nil {
+		return confirmErr
+	}
+
+	svc, err := getKeepService(ctx, flags, keep)
+	if err != nil {
+		return err
+	}
+
+	if _, err := svc.Notes.Delete(name).Context(ctx).Do(); err != nil {
+		return err
+	}
+
+	return writeResult(ctx, u,
+		kv("deleted", true),
+		kv("name", name),
+	)
 }
 
 func getKeepService(ctx context.Context, flags *RootFlags, keepCmd *KeepCmd) (*keepapi.Service, error) {
@@ -325,7 +421,7 @@ func getKeepService(ctx context.Context, flags *RootFlags, keepCmd *KeepCmd) (*k
 		if keepCmd.Impersonate == "" {
 			return nil, fmt.Errorf("--impersonate is required when using --service-account")
 		}
-		return newKeepServiceWithSA(ctx, keepCmd.ServiceAccount, keepCmd.Impersonate)
+		return keepServiceWithServiceAccount(ctx, keepCmd.ServiceAccount, keepCmd.Impersonate)
 	}
 
 	account, err := requireAccount(flags)
@@ -333,28 +429,16 @@ func getKeepService(ctx context.Context, flags *RootFlags, keepCmd *KeepCmd) (*k
 		return nil, err
 	}
 
-	genericSAPath, err := config.ServiceAccountPath(account)
+	serviceAccounts, err := commandServiceAccountStore(ctx)
 	if err != nil {
 		return nil, err
 	}
-	if _, statErr := os.Stat(genericSAPath); statErr == nil {
-		return newKeepServiceWithSA(ctx, genericSAPath, account)
-	}
-
-	saPath, err := config.KeepServiceAccountPath(account)
+	file, exists, err := serviceAccounts.Existing(account, true)
 	if err != nil {
 		return nil, err
 	}
-
-	if _, statErr := os.Stat(saPath); statErr == nil {
-		return newKeepServiceWithSA(ctx, saPath, account)
-	}
-
-	legacyPath, legacyErr := config.KeepServiceAccountLegacyPath(account)
-	if legacyErr == nil {
-		if _, statErr := os.Stat(legacyPath); statErr == nil {
-			return newKeepServiceWithSA(ctx, legacyPath, account)
-		}
+	if exists {
+		return keepServiceWithServiceAccount(ctx, file.Path, account)
 	}
 
 	return nil, usage("Keep is Workspace-only and requires a service account. Configure it with: gog auth service-account set <email> --key <service-account.json> (or legacy: gog auth keep <email> --key <service-account.json>)")

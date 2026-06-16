@@ -3,7 +3,6 @@ package cmd
 import (
 	"context"
 	"fmt"
-	"os"
 	"sort"
 	"strconv"
 	"text/tabwriter"
@@ -21,7 +20,7 @@ func (c *CalendarColorsCmd) Run(ctx context.Context, flags *RootFlags) error {
 		return err
 	}
 
-	svc, err := newCalendarService(ctx, account)
+	svc, err := calendarService(ctx, account)
 	if err != nil {
 		return err
 	}
@@ -32,7 +31,7 @@ func (c *CalendarColorsCmd) Run(ctx context.Context, flags *RootFlags) error {
 	}
 
 	if outfmt.IsJSON(ctx) {
-		return outfmt.WriteJSON(ctx, os.Stdout, map[string]any{
+		return outfmt.WriteJSON(ctx, stdoutWriter(ctx), map[string]any{
 			"event":    colors.Event,
 			"calendar": colors.Calendar,
 		})
@@ -43,9 +42,10 @@ func (c *CalendarColorsCmd) Run(ctx context.Context, flags *RootFlags) error {
 		return nil
 	}
 
+	out := stdoutWriter(ctx)
 	if len(colors.Event) > 0 {
-		fmt.Println("EVENT COLORS:")
-		tw := tabwriter.NewWriter(os.Stdout, 0, 4, 2, ' ', 0)
+		fmt.Fprintln(out, "EVENT COLORS:")
+		tw := tabwriter.NewWriter(out, 0, 4, 2, ' ', 0)
 		fmt.Fprintln(tw, "ID\tBACKGROUND\tFOREGROUND")
 
 		ids := make([]int, 0, len(colors.Event))
@@ -62,12 +62,12 @@ func (c *CalendarColorsCmd) Run(ctx context.Context, flags *RootFlags) error {
 			fmt.Fprintf(tw, "%s\t%s\t%s\n", id, c.Background, c.Foreground)
 		}
 		_ = tw.Flush()
-		fmt.Println()
+		fmt.Fprintln(out)
 	}
 
 	if len(colors.Calendar) > 0 {
-		fmt.Println("CALENDAR COLORS:")
-		tw := tabwriter.NewWriter(os.Stdout, 0, 4, 2, ' ', 0)
+		fmt.Fprintln(out, "CALENDAR COLORS:")
+		tw := tabwriter.NewWriter(out, 0, 4, 2, ' ', 0)
 		fmt.Fprintln(tw, "ID\tBACKGROUND\tFOREGROUND")
 
 		ids := make([]int, 0, len(colors.Calendar))

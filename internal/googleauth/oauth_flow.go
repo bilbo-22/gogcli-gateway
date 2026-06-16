@@ -16,19 +16,24 @@ import (
 	"golang.org/x/oauth2"
 	"golang.org/x/oauth2/google"
 
+	"github.com/steipete/gogcli/internal/authclient"
 	"github.com/steipete/gogcli/internal/config"
 )
 
 type AuthorizeOptions struct {
-	Services     []Service
-	Scopes       []string
-	Manual       bool
-	ForceConsent bool
-	Timeout      time.Duration
-	Client       string
-	AuthCode     string
-	AuthURL      string
-	RequireState bool
+	Services                    []Service
+	Scopes                      []string
+	Manual                      bool
+	ForceConsent                bool
+	DisableIncludeGrantedScopes bool
+	Timeout                     time.Duration
+	Client                      string
+	AuthCode                    string
+	AuthURL                     string
+	ListenAddr                  string
+	RedirectURI                 string
+	RequireState                bool
+	ManualStateStore            *ManualStateStore
 }
 
 type ManualAuthURLResult struct {
@@ -46,28 +51,32 @@ type successTemplateData struct {
 	Services         []string
 	AllServices      []string
 	CountdownSeconds int
+	CSRFToken        string
 }
 
 var (
-	readClientCredentials = config.ReadClientCredentialsFor
+	readClientCredentials func(string) (config.ClientCredentials, error)
 	openBrowserFn         = openBrowser
 	oauthEndpoint         = google.Endpoint
 	randomStateFn         = randomState
+	generateVerifierFn    = oauth2.GenerateVerifier
 	manualRedirectURIFn   = randomManualRedirectURI
 )
 
 var (
-	errAuthorization       = errors.New("authorization error")
-	errInvalidRedirectURL  = errors.New("invalid redirect URL")
-	errMissingCode         = errors.New("missing code")
-	errMissingRedirectURI  = errors.New("missing redirect uri; provide auth-url")
-	errMissingState        = errors.New("missing state in redirect URL")
-	errMissingScopes       = errors.New("missing scopes")
-	errNoCodeInURL         = errors.New("no code found in URL")
-	errNoRefreshToken      = errors.New("no refresh token received; try again with --force-consent")
-	errManualStateMissing  = errors.New("manual auth state missing; run remote step 1 again")
-	errManualStateMismatch = errors.New("manual auth state mismatch; run remote step 1 again")
-	errStateMismatch       = errors.New("state mismatch")
+	errAuthorization             = errors.New("authorization error")
+	errInvalidRedirectURL        = errors.New("invalid redirect URL")
+	errMissingCode               = errors.New("missing code")
+	errMissingRedirectURI        = errors.New("missing redirect uri; provide auth-url")
+	errMissingState              = errors.New("missing state in redirect URL")
+	errMissingScopes             = errors.New("missing scopes")
+	errNoCodeInURL               = errors.New("no code found in URL")
+	errNoRefreshToken            = errors.New("no refresh token received; try again with --force-consent")
+	errManualStateMissing        = errors.New("manual auth state missing; start a new manual flow or run remote step 1 again")
+	errManualStateMismatch       = errors.New("manual auth state mismatch; start a new manual flow or run remote step 1 again")
+	errManualStateStore          = errors.New("manual auth state store is required")
+	errStateMismatch             = errors.New("state mismatch")
+	errCredentialsReaderRequired = errors.New("credentials reader is required")
 
 	errInvalidAuthorizeOptionsAuthURLAndCode    = errors.New("cannot combine auth-url with auth-code")
 	errInvalidAuthorizeOptionsAuthCodeWithState = errors.New("auth-code is not valid when state is required; provide auth-url")
@@ -76,6 +85,15 @@ var (
 func Authorize(ctx context.Context, opts AuthorizeOptions) (string, error) {
 	if opts.Timeout <= 0 {
 		opts.Timeout = 2 * time.Minute
+	}
+
+	if strings.TrimSpace(opts.RedirectURI) != "" {
+		redirectURI, err := normalizeRedirectURI(opts.RedirectURI)
+		if err != nil {
+			return "", err
+		}
+
+		opts.RedirectURI = redirectURI
 	}
 
 	if strings.TrimSpace(opts.AuthURL) != "" && strings.TrimSpace(opts.AuthCode) != "" {
@@ -90,7 +108,11 @@ func Authorize(ctx context.Context, opts AuthorizeOptions) (string, error) {
 		return "", errMissingScopes
 	}
 
-	creds, err := readClientCredentials(opts.Client)
+	if opts.Manual && opts.ManualStateStore == nil {
+		return "", errManualStateStore
+	}
+
+	creds, err := readOAuthClientCredentials(ctx, opts.Client)
 	if err != nil {
 		return "", err
 	}
@@ -105,21 +127,51 @@ func Authorize(ctx context.Context, opts AuthorizeOptions) (string, error) {
 	return authorizeServer(ctx, opts, creds)
 }
 
+func readOAuthClientCredentials(ctx context.Context, client string) (config.ClientCredentials, error) {
+	if readClientCredentials != nil {
+		return readClientCredentials(client)
+	}
+
+	credentials, err := authclient.ReadCredentials(ctx, client)
+	if err != nil {
+		return config.ClientCredentials{}, fmt.Errorf("read OAuth client credentials: %w", err)
+	}
+
+	return credentials, nil
+}
+
+func manageCredentialsReader(
+	ctx context.Context,
+	reader func(client string) (config.ClientCredentials, error),
+) func(client string) (config.ClientCredentials, error) {
+	if reader != nil {
+		return reader
+	}
+
+	return func(client string) (config.ClientCredentials, error) {
+		return readOAuthClientCredentials(ctx, client)
+	}
+}
+
 func authorizeServer(ctx context.Context, opts AuthorizeOptions, creds config.ClientCredentials) (string, error) {
 	state, err := randomStateFn()
 	if err != nil {
 		return "", err
 	}
 
-	ln, err := (&net.ListenConfig{}).Listen(ctx, "tcp", "127.0.0.1:0")
+	listenAddr, err := normalizeListenAddr(opts.ListenAddr)
+	if err != nil {
+		return "", err
+	}
+
+	ln, err := (&net.ListenConfig{}).Listen(ctx, "tcp", listenAddr)
 	if err != nil {
 		return "", fmt.Errorf("listen for callback: %w", err)
 	}
 
 	defer func() { _ = ln.Close() }()
 
-	port := ln.Addr().(*net.TCPAddr).Port
-	redirectURI := fmt.Sprintf("http://127.0.0.1:%d/oauth2/callback", port)
+	redirectURI := resolveServerRedirectURI(ln, opts.RedirectURI)
 
 	cfg := oauth2.Config{
 		ClientID:     creds.ClientID,
@@ -204,11 +256,16 @@ func authorizeServer(ctx context.Context, opts AuthorizeOptions, creds config.Cl
 		}
 	}()
 
-	authURL := cfg.AuthCodeURL(state, authURLParams(opts.ForceConsent)...)
+	codeVerifier := generateVerifierFn()
+	authURL := cfg.AuthCodeURL(state, pkceAuthURLParams(opts.ForceConsent, !opts.DisableIncludeGrantedScopes, codeVerifier)...)
 
 	fmt.Fprintln(os.Stderr, "Opening browser for authorization…")
 	fmt.Fprintln(os.Stderr, "If the browser doesn't open, visit this URL:")
 	fmt.Fprintln(os.Stderr, authURL)
+
+	if strings.TrimSpace(opts.ListenAddr) != "" {
+		fmt.Fprintf(os.Stderr, "Server listening on %s\n", ln.Addr().String())
+	}
 	_ = openBrowserFn(authURL)
 
 	select {
@@ -216,7 +273,7 @@ func authorizeServer(ctx context.Context, opts AuthorizeOptions, creds config.Cl
 		fmt.Fprintln(os.Stderr, "Authorization received. Finishing…")
 		var tok *oauth2.Token
 
-		if t, exchangeErr := cfg.Exchange(ctx, code); exchangeErr != nil {
+		if t, exchangeErr := cfg.Exchange(ctx, code, oauth2.VerifierOption(codeVerifier)); exchangeErr != nil {
 			_ = srv.Close()
 
 			return "", fmt.Errorf("exchange code: %w", exchangeErr)
@@ -245,16 +302,21 @@ func authorizeServer(ctx context.Context, opts AuthorizeOptions, creds config.Cl
 	}
 }
 
-func authURLParams(forceConsent bool) []oauth2.AuthCodeOption {
-	opts := []oauth2.AuthCodeOption{
-		oauth2.AccessTypeOffline,
-		oauth2.SetAuthURLParam("include_granted_scopes", "true"),
+func authURLParams(forceConsent bool, includeGrantedScopes bool) []oauth2.AuthCodeOption {
+	opts := []oauth2.AuthCodeOption{oauth2.AccessTypeOffline}
+	if includeGrantedScopes {
+		opts = append(opts, oauth2.SetAuthURLParam("include_granted_scopes", "true"))
 	}
+
 	if forceConsent {
 		opts = append(opts, oauth2.SetAuthURLParam("prompt", "consent"))
 	}
 
 	return opts
+}
+
+func pkceAuthURLParams(forceConsent bool, includeGrantedScopes bool, codeVerifier string) []oauth2.AuthCodeOption {
+	return append(authURLParams(forceConsent, includeGrantedScopes), oauth2.S256ChallengeOption(codeVerifier))
 }
 
 func randomState() (string, error) {
@@ -283,7 +345,7 @@ func renderSuccessPage(w http.ResponseWriter) {
 func renderErrorPage(w http.ResponseWriter, errorMsg string) {
 	tmpl, err := template.New("error").Parse(errorTemplate)
 	if err != nil {
-		_, _ = w.Write([]byte("Error: " + errorMsg))
+		_, _ = w.Write([]byte("Error: " + template.HTMLEscapeString(errorMsg)))
 		return
 	}
 	_ = tmpl.Execute(w, struct{ Error string }{Error: errorMsg})

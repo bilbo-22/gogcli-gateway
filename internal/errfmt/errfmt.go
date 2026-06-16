@@ -19,6 +19,11 @@ func Format(err error) string {
 		return ""
 	}
 
+	var userErr *UserFacingError
+	if errors.As(err, &userErr) {
+		return userErr.Message
+	}
+
 	// Handle Kong parse errors with better messaging
 	var parseErr *kong.ParseError
 	if errors.As(err, &parseErr) {
@@ -27,6 +32,15 @@ func Format(err error) string {
 
 	var authErr *gogapi.AuthRequiredError
 	if errors.As(err, &authErr) {
+		if isServiceAccountOnlyAuthService(authErr.Service) {
+			return fmt.Sprintf(
+				"No auth for %s %s.\n\nWorkspace service account (domain-wide delegation):\n  gog auth service-account set %s --key <service-account.json>",
+				authErr.Service,
+				authErr.Email,
+				authErr.Email,
+			)
+		}
+
 		return fmt.Sprintf(
 			"No auth for %s %s.\n\nOAuth (browser flow):\n  gog auth add %s --services %s\n\nWorkspace service account (domain-wide delegation):\n  gog auth service-account set %s --key <service-account.json>",
 			authErr.Service,
@@ -53,26 +67,21 @@ func Format(err error) string {
 		return err.Error()
 	}
 
-	var userErr *UserFacingError
-	if errors.As(err, &userErr) {
-		return userErr.Message
-	}
-
 	var gerr *ggoogleapi.Error
 	if errors.As(err, &gerr) {
-		reason := ""
-		if len(gerr.Errors) > 0 && gerr.Errors[0].Reason != "" {
-			reason = gerr.Errors[0].Reason
-		}
-
-		if reason != "" {
-			return fmt.Sprintf("Google API error (%d %s): %s", gerr.Code, reason, gerr.Message)
-		}
-
-		return fmt.Sprintf("Google API error (%d): %s", gerr.Code, gerr.Message)
+		return formatGoogleAPIError(gerr)
 	}
 
 	return err.Error()
+}
+
+func isServiceAccountOnlyAuthService(service string) bool {
+	switch strings.ToLower(strings.TrimSpace(service)) {
+	case "admin", "admin directory", "admin orgunits", "groups", "keep":
+		return true
+	default:
+		return false
+	}
 }
 
 // UserFacingError forces a specific message, while preserving the underlying cause.

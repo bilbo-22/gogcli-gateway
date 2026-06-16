@@ -1,29 +1,20 @@
 package cmd
 
 import (
-	"context"
+	"bytes"
 	"encoding/json"
 	"io"
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
-
-	"google.golang.org/api/gmail/v1"
-	"google.golang.org/api/option"
-
-	"github.com/steipete/gogcli/internal/outfmt"
-	"github.com/steipete/gogcli/internal/ui"
 )
 
 func TestGmailWatchRenewAndStop_JSON(t *testing.T) {
-	origNew := newGmailService
-	t.Cleanup(func() { newGmailService = origNew })
-
-	home := t.TempDir()
-	t.Setenv("HOME", home)
+	setWatchTestConfigHome(t)
 
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch {
@@ -44,20 +35,9 @@ func TestGmailWatchRenewAndStop_JSON(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	svc, err := gmail.NewService(context.Background(),
-		option.WithoutAuthentication(),
-		option.WithHTTPClient(srv.Client()),
-		option.WithEndpoint(srv.URL+"/"),
-	)
-	if err != nil {
-		t.Fatalf("NewService: %v", err)
-	}
-	newGmailService = func(context.Context, string) (*gmail.Service, error) { return svc, nil }
+	svc := newGmailServiceFromServer(t, srv)
 
-	store, err := newGmailWatchStore("a@b.com")
-	if err != nil {
-		t.Fatalf("store: %v", err)
-	}
+	store := newGmailWatchTestStore(t, "a@b.com")
 	_ = store.Update(func(s *gmailWatchState) error {
 		*s = gmailWatchState{
 			Account:      "a@b.com",
@@ -71,40 +51,23 @@ func TestGmailWatchRenewAndStop_JSON(t *testing.T) {
 	})
 
 	flags := &RootFlags{Account: "a@b.com", Force: true}
+	ctx := withGmailTestService(newCmdRuntimeJSONOutputContext(t, io.Discard, io.Discard), svc)
+	if err := runKong(t, &GmailWatchRenewCmd{}, []string{"--ttl", "3600"}, ctx, flags); err != nil {
+		t.Fatalf("renew: %v", err)
+	}
+	if err := runKong(t, &GmailWatchStopCmd{}, []string{}, ctx, flags); err != nil {
+		t.Fatalf("stop: %v", err)
+	}
 
-	_ = captureStdout(t, func() {
-		u, uiErr := ui.New(ui.Options{Stdout: os.Stdout, Stderr: os.Stderr, Color: "never"})
-		if uiErr != nil {
-			t.Fatalf("ui.New: %v", uiErr)
-		}
-		ctx := ui.WithUI(context.Background(), u)
-		ctx = outfmt.WithMode(ctx, outfmt.Mode{JSON: true})
-
-		if err := runKong(t, &GmailWatchRenewCmd{}, []string{"--ttl", "3600"}, ctx, flags); err != nil {
-			t.Fatalf("renew: %v", err)
-		}
-
-		if err := runKong(t, &GmailWatchStopCmd{}, []string{}, ctx, flags); err != nil {
-			t.Fatalf("stop: %v", err)
-		}
-	})
-
-	if _, statErr := os.Stat(store.path); !os.IsNotExist(statErr) {
+	if _, statErr := os.Stat(store.Path()); !os.IsNotExist(statErr) {
 		t.Fatalf("expected watch state removed, err=%v", statErr)
 	}
 }
 
 func TestGmailWatchStatusAndStop_Text(t *testing.T) {
-	origNew := newGmailService
-	t.Cleanup(func() { newGmailService = origNew })
+	setWatchTestConfigHome(t)
 
-	home := t.TempDir()
-	t.Setenv("HOME", home)
-
-	store, err := newGmailWatchStore("a@b.com")
-	if err != nil {
-		t.Fatalf("store: %v", err)
-	}
+	store := newGmailWatchTestStore(t, "a@b.com")
 	_ = store.Update(func(s *gmailWatchState) error {
 		*s = gmailWatchState{
 			Account:   "a@b.com",
@@ -124,33 +87,83 @@ func TestGmailWatchStatusAndStop_Text(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	svc, err := gmail.NewService(context.Background(),
-		option.WithoutAuthentication(),
-		option.WithHTTPClient(srv.Client()),
-		option.WithEndpoint(srv.URL+"/"),
-	)
-	if err != nil {
-		t.Fatalf("NewService: %v", err)
-	}
-	newGmailService = func(context.Context, string) (*gmail.Service, error) { return svc, nil }
+	svc := newGmailServiceFromServer(t, srv)
 
 	flags := &RootFlags{Account: "a@b.com", Force: true}
-	out := captureStdout(t, func() {
-		u, uiErr := ui.New(ui.Options{Stdout: os.Stdout, Stderr: io.Discard, Color: "never"})
-		if uiErr != nil {
-			t.Fatalf("ui.New: %v", uiErr)
-		}
-		ctx := ui.WithUI(context.Background(), u)
+	var out bytes.Buffer
+	ctx := withGmailTestService(newCmdRuntimeOutputContext(t, &out, io.Discard), svc)
+	if err := runKong(t, &GmailWatchStatusCmd{}, []string{}, ctx, flags); err != nil {
+		t.Fatalf("status: %v", err)
+	}
+	if err := runKong(t, &GmailWatchStopCmd{}, []string{}, ctx, flags); err != nil {
+		t.Fatalf("stop: %v", err)
+	}
+	if !strings.Contains(out.String(), "account") || !strings.Contains(out.String(), "stopped") {
+		t.Fatalf("unexpected output: %q", out.String())
+	}
+}
 
-		if err := runKong(t, &GmailWatchStatusCmd{}, []string{}, ctx, flags); err != nil {
-			t.Fatalf("status: %v", err)
-		}
+func TestGmailWatchStatusCmd_ReadOnlyStateAccess(t *testing.T) {
+	t.Run("missing state", func(t *testing.T) {
+		setWatchTestConfigHome(t)
+		layout := gmailWatchTestLayout(t)
+		ctx := newCmdRuntimeJSONOutputContext(t, io.Discard, io.Discard)
 
-		if err := runKong(t, &GmailWatchStopCmd{}, []string{}, ctx, flags); err != nil {
-			t.Fatalf("stop: %v", err)
+		err := runKong(t, &GmailWatchStatusCmd{}, nil, ctx, &RootFlags{
+			Account: "a@b.com",
+			DryRun:  true,
+			NoInput: true,
+		})
+		if err == nil || ExitCode(err) != 1 || err.Error() != "watch state not found; run gmail watch start" {
+			t.Fatalf("missing state error = %v", err)
+		}
+		for _, path := range []string{layout.PrimaryGmailWatchDir(), layout.LegacyGmailWatchDir()} {
+			if _, statErr := os.Stat(path); !os.IsNotExist(statErr) {
+				t.Fatalf("status touched watch state path %q: %v", path, statErr)
+			}
 		}
 	})
-	if !strings.Contains(out, "account") || !strings.Contains(out, "stopped") {
-		t.Fatalf("unexpected output: %q", out)
-	}
+
+	t.Run("existing state", func(t *testing.T) {
+		setWatchTestConfigHome(t)
+		layout := gmailWatchTestLayout(t)
+		statePath := filepath.Join(layout.GmailWatchDir(), sanitizeAccountForPath("a@b.com")+".json")
+		if err := os.MkdirAll(filepath.Dir(statePath), 0o700); err != nil {
+			t.Fatalf("mkdir watch state: %v", err)
+		}
+		stateBytes, marshalErr := json.Marshal(gmailWatchState{
+			Account:   "a@b.com",
+			Topic:     "projects/p/topics/t",
+			HistoryID: "100",
+		})
+		if marshalErr != nil {
+			t.Fatalf("marshal watch state: %v", marshalErr)
+		}
+		if writeErr := os.WriteFile(statePath, stateBytes, 0o600); writeErr != nil {
+			t.Fatalf("write watch state: %v", writeErr)
+		}
+
+		var stdout bytes.Buffer
+		ctx := newCmdRuntimeJSONOutputContext(t, &stdout, io.Discard)
+		if runErr := runKong(t, &GmailWatchStatusCmd{}, nil, ctx, &RootFlags{
+			Account: "a@b.com",
+			DryRun:  true,
+			NoInput: true,
+		}); runErr != nil {
+			t.Fatalf("status: %v", runErr)
+		}
+		if !strings.Contains(stdout.String(), `"account": "a@b.com"`) {
+			t.Fatalf("unexpected status output: %s", stdout.String())
+		}
+		if _, statErr := os.Stat(filepath.Join(filepath.Dir(statePath), ".lock")); !os.IsNotExist(statErr) {
+			t.Fatalf("status created watch lock: %v", statErr)
+		}
+		after, readErr := os.ReadFile(statePath)
+		if readErr != nil {
+			t.Fatalf("read watch state: %v", readErr)
+		}
+		if !bytes.Equal(after, stateBytes) {
+			t.Fatalf("status changed watch state:\nwant=%s\ngot=%s", stateBytes, after)
+		}
+	})
 }

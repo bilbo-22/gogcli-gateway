@@ -6,12 +6,13 @@ import (
 
 	"google.golang.org/api/docs/v1"
 
+	"github.com/steipete/gogcli/internal/docssed"
 	"github.com/steipete/gogcli/internal/ui"
 )
 
 func (c *DocsSedCmd) doPositionalInsert(ctx context.Context, docsSvc *docs.Service, u *ui.UI, id string, idx int64, replacement string) error {
 	// Check for image syntax first
-	imgSpec := parseImageSyntax(replacement)
+	imgSpec := docssed.ParseImageSyntax(replacement)
 
 	// Check for table creation (explicit |RxC| or pipe-table syntax)
 	tableSpec := parseTableCreate(replacement)
@@ -53,21 +54,21 @@ func (c *DocsSedCmd) doPositionalInsert(ctx context.Context, docsSvc *docs.Servi
 
 		// Apply text formatting if any
 		if len(formats) > 0 {
-			end := idx + int64(len(plainText))
+			end := idx + utf16Len(plainText)
 			requests = append(requests, buildTextStyleRequests(formats, idx, end)...)
 		}
 	}
 
 	// After inserting text, reset paragraph styles and apply heading/bullet if requested
 	if tableSpec == nil && imgSpec == nil && plainText != "" {
-		end := idx + int64(len(plainText))
+		end := idx + utf16Len(plainText)
 
 		// Reset paragraph to NORMAL_TEXT (removes inherited heading styles)
 		requests = append(requests, &docs.Request{
 			UpdateParagraphStyle: &docs.UpdateParagraphStyleRequest{
 				Range: &docs.Range{StartIndex: idx, EndIndex: end},
 				ParagraphStyle: &docs.ParagraphStyle{
-					NamedStyleType: "NORMAL_TEXT",
+					NamedStyleType: docsNamedStyleNormalText,
 				},
 				Fields: "namedStyleType",
 			},
@@ -83,12 +84,7 @@ func (c *DocsSedCmd) doPositionalInsert(ctx context.Context, docsSvc *docs.Servi
 		requests = append(requests, buildParagraphStyleRequests(formats, idx, end)...)
 	}
 
-	err := retryOnQuota(ctx, func() error {
-		_, e := docsSvc.Documents.BatchUpdate(id, &docs.BatchUpdateDocumentRequest{
-			Requests: requests,
-		}).Context(ctx).Do()
-		return e
-	})
+	_, err := batchUpdate(ctx, docsSvc, id, requests)
 	if err != nil {
 		return fmt.Errorf("batch update (positional insert): %w", err)
 	}

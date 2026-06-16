@@ -3,9 +3,7 @@ package cmd
 import (
 	"context"
 	"fmt"
-	"os"
 	"strings"
-	"text/tabwriter"
 
 	"google.golang.org/api/gmail/v1"
 
@@ -23,13 +21,7 @@ type GmailForwardingCmd struct {
 type GmailForwardingListCmd struct{}
 
 func (c *GmailForwardingListCmd) Run(ctx context.Context, flags *RootFlags) error {
-	u := ui.FromContext(ctx)
-	account, err := requireAccount(flags)
-	if err != nil {
-		return err
-	}
-
-	svc, err := newGmailService(ctx, account)
+	svc, err := loadGmailSettingsService(ctx, flags)
 	if err != nil {
 		return err
 	}
@@ -38,25 +30,18 @@ func (c *GmailForwardingListCmd) Run(ctx context.Context, flags *RootFlags) erro
 	if err != nil {
 		return err
 	}
-
-	if outfmt.IsJSON(ctx) {
-		return outfmt.WriteJSON(ctx, os.Stdout, map[string]any{"forwardingAddresses": resp.ForwardingAddresses})
+	addresses := normalizeGmailSettingsItems(resp.ForwardingAddresses)
+	rows := make([]gmailEmailStatusRow, 0, len(addresses))
+	for _, f := range addresses {
+		if f == nil {
+			continue
+		}
+		rows = append(rows, gmailEmailStatusRow{
+			Email:  f.ForwardingEmail,
+			Status: f.VerificationStatus,
+		})
 	}
-
-	if len(resp.ForwardingAddresses) == 0 {
-		u.Err().Println("No forwarding addresses")
-		return nil
-	}
-
-	tw := tabwriter.NewWriter(os.Stdout, 0, 4, 2, ' ', 0)
-	fmt.Fprintln(tw, "EMAIL\tSTATUS")
-	for _, f := range resp.ForwardingAddresses {
-		fmt.Fprintf(tw, "%s\t%s\n",
-			f.ForwardingEmail,
-			f.VerificationStatus)
-	}
-	_ = tw.Flush()
-	return nil
+	return writeGmailEmailStatusList(ctx, "forwardingAddresses", addresses, "No forwarding addresses", rows)
 }
 
 type GmailForwardingGetCmd struct {
@@ -64,13 +49,7 @@ type GmailForwardingGetCmd struct {
 }
 
 func (c *GmailForwardingGetCmd) Run(ctx context.Context, flags *RootFlags) error {
-	u := ui.FromContext(ctx)
-	account, err := requireAccount(flags)
-	if err != nil {
-		return err
-	}
-
-	svc, err := newGmailService(ctx, account)
+	svc, err := loadGmailSettingsService(ctx, flags)
 	if err != nil {
 		return err
 	}
@@ -79,18 +58,17 @@ func (c *GmailForwardingGetCmd) Run(ctx context.Context, flags *RootFlags) error
 	if forwardingEmail == "" {
 		return usage("empty forwardingEmail")
 	}
+	if validateErr := validateGmailSettingsEmail("forwardingEmail", forwardingEmail); validateErr != nil {
+		return validateErr
+	}
 	address, err := svc.Users.Settings.ForwardingAddresses.Get("me", forwardingEmail).Do()
 	if err != nil {
 		return err
 	}
-
-	if outfmt.IsJSON(ctx) {
-		return outfmt.WriteJSON(ctx, os.Stdout, map[string]any{"forwardingAddress": address})
-	}
-
-	u.Out().Printf("forwarding_email\t%s", address.ForwardingEmail)
-	u.Out().Printf("verification_status\t%s", address.VerificationStatus)
-	return nil
+	return writeGmailEmailStatusItem(ctx, "forwardingAddress", address, "forwarding_email", gmailEmailStatusRow{
+		Email:  address.ForwardingEmail,
+		Status: address.VerificationStatus,
+	})
 }
 
 type GmailForwardingCreateCmd struct {
@@ -98,10 +76,12 @@ type GmailForwardingCreateCmd struct {
 }
 
 func (c *GmailForwardingCreateCmd) Run(ctx context.Context, flags *RootFlags) error {
-	u := ui.FromContext(ctx)
 	forwardingEmail := strings.TrimSpace(c.ForwardingEmail)
 	if forwardingEmail == "" {
 		return usage("empty forwardingEmail")
+	}
+	if err := validateGmailSettingsEmail("forwardingEmail", forwardingEmail); err != nil {
+		return err
 	}
 
 	if err := dryRunExit(ctx, flags, "gmail.forwarding.create", map[string]any{
@@ -110,12 +90,7 @@ func (c *GmailForwardingCreateCmd) Run(ctx context.Context, flags *RootFlags) er
 		return err
 	}
 
-	account, err := requireAccount(flags)
-	if err != nil {
-		return err
-	}
-
-	svc, err := newGmailService(ctx, account)
+	svc, err := loadGmailSettingsService(ctx, flags)
 	if err != nil {
 		return err
 	}
@@ -128,17 +103,17 @@ func (c *GmailForwardingCreateCmd) Run(ctx context.Context, flags *RootFlags) er
 	if err != nil {
 		return err
 	}
-
-	if outfmt.IsJSON(ctx) {
-		return outfmt.WriteJSON(ctx, os.Stdout, map[string]any{"forwardingAddress": created})
-	}
-
-	u.Out().Println("Forwarding address created successfully")
-	u.Out().Printf("forwarding_email\t%s", created.ForwardingEmail)
-	u.Out().Printf("verification_status\t%s", created.VerificationStatus)
-	u.Out().Println("\nA verification email has been sent to the forwarding address.")
-	u.Out().Println("The address cannot be used until the recipient confirms the verification link.")
-	return nil
+	return writeGmailEmailStatusCreateResult(
+		ctx,
+		"forwardingAddress",
+		created,
+		"forwarding_email",
+		gmailEmailStatusRow{Email: created.ForwardingEmail, Status: created.VerificationStatus},
+		"Forwarding address created successfully",
+		"",
+		"A verification email has been sent to the forwarding address.",
+		"The address cannot be used until the recipient confirms the verification link.",
+	)
 }
 
 type GmailForwardingDeleteCmd struct {
@@ -146,22 +121,21 @@ type GmailForwardingDeleteCmd struct {
 }
 
 func (c *GmailForwardingDeleteCmd) Run(ctx context.Context, flags *RootFlags) error {
-	u := ui.FromContext(ctx)
 	forwardingEmail := strings.TrimSpace(c.ForwardingEmail)
 	if forwardingEmail == "" {
 		return usage("empty forwardingEmail")
 	}
-
-	if confirmErr := confirmDestructive(ctx, flags, fmt.Sprintf("delete gmail forwarding address %s", forwardingEmail)); confirmErr != nil {
-		return confirmErr
-	}
-
-	account, err := requireAccount(flags)
-	if err != nil {
+	if err := validateGmailSettingsEmail("forwardingEmail", forwardingEmail); err != nil {
 		return err
 	}
 
-	svc, err := newGmailService(ctx, account)
+	if confirmErr := dryRunAndConfirmDestructive(ctx, flags, "gmail.forwarding.delete", map[string]any{
+		"forwarding_email": forwardingEmail,
+	}, fmt.Sprintf("delete gmail forwarding address %s", forwardingEmail)); confirmErr != nil {
+		return confirmErr
+	}
+
+	svc, err := loadGmailSettingsService(ctx, flags)
 	if err != nil {
 		return err
 	}
@@ -172,12 +146,12 @@ func (c *GmailForwardingDeleteCmd) Run(ctx context.Context, flags *RootFlags) er
 	}
 
 	if outfmt.IsJSON(ctx) {
-		return outfmt.WriteJSON(ctx, os.Stdout, map[string]any{
+		return outfmt.WriteJSON(ctx, stdoutWriter(ctx), map[string]any{
 			"success":         true,
 			"forwardingEmail": forwardingEmail,
 		})
 	}
 
-	u.Out().Printf("Forwarding address %s deleted successfully", forwardingEmail)
+	ui.FromContext(ctx).Out().Linef("Forwarding address %s deleted successfully", forwardingEmail)
 	return nil
 }

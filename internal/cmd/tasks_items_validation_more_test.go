@@ -3,6 +3,7 @@ package cmd
 import (
 	"context"
 	"io"
+	"strings"
 	"testing"
 
 	"github.com/alecthomas/kong"
@@ -49,6 +50,49 @@ func TestTasksValidationErrors(t *testing.T) {
 	}
 	if err := (&TasksAddCmd{TasklistID: "l1", Title: "Task", RepeatCount: 2}).Run(ctx, flags); err == nil {
 		t.Fatalf("expected add repeat-count without repeat")
+	}
+	if err := (&TasksAddCmd{TasklistID: "l1", Title: "Task", Recur: "weekly", Due: "2025-01-01"}).Run(ctx, flags); err == nil {
+		t.Fatalf("expected add recur missing count/until")
+	}
+	if err := (&TasksAddCmd{TasklistID: "l1", Title: "Task", Recur: "weekly", RecurRRule: "FREQ=WEEKLY", Due: "2025-01-01", RepeatCount: 2}).Run(ctx, flags); err == nil {
+		t.Fatalf("expected add recur and recur-rrule conflict")
+	}
+	if err := (&TasksAddCmd{TasklistID: "l1", Title: "Task", Repeat: "weekly", Recur: "weekly", Due: "2025-01-01", RepeatCount: 2}).Run(ctx, flags); err == nil {
+		t.Fatalf("expected add repeat and recur conflict")
+	}
+	if err := (&TasksAddCmd{TasklistID: "l1", Title: "Task", RecurRRule: "FREQ=WEEKLY;BYDAY=MO", Due: "2025-01-01", RepeatCount: 2}).Run(ctx, flags); err == nil {
+		t.Fatalf("expected add recur-rrule unsupported token")
+	}
+	for _, tc := range []struct {
+		name string
+		cmd  TasksAddCmd
+		want string
+	}{
+		{
+			name: "invalid repeat",
+			cmd:  TasksAddCmd{TasklistID: "l1", Title: "Task", Repeat: "nope"},
+			want: "invalid repeat value",
+		},
+		{
+			name: "rrule missing freq",
+			cmd:  TasksAddCmd{TasklistID: "l1", Title: "Task", RecurRRule: "INTERVAL=2", Due: "2025-01-01", RepeatCount: 2},
+			want: "missing FREQ",
+		},
+		{
+			name: "rrule unsupported freq",
+			cmd:  TasksAddCmd{TasklistID: "l1", Title: "Task", RecurRRule: "FREQ=HOURLY", Due: "2025-01-01", RepeatCount: 2},
+			want: "unsupported FREQ",
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			err := tc.cmd.Run(ctx, flags)
+			if err == nil || !strings.Contains(err.Error(), tc.want) {
+				t.Fatalf("expected %q error, got %v", tc.want, err)
+			}
+			if got := ExitCode(err); got != 2 {
+				t.Fatalf("ExitCode = %d, want 2 (err=%v)", got, err)
+			}
+		})
 	}
 
 	{

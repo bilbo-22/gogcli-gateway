@@ -3,11 +3,12 @@ package cmd
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
 func TestResolveInlineOrFileBytes_Literal(t *testing.T) {
-	got, err := resolveInlineOrFileBytes(`{"a":1}`)
+	got, err := resolveInlineOrFileBytes(`{"a":1}`, strings.NewReader(""))
 	if err != nil {
 		t.Fatalf("resolve: %v", err)
 	}
@@ -23,7 +24,7 @@ func TestResolveInlineOrFileBytes_File(t *testing.T) {
 		t.Fatalf("write: %v", err)
 	}
 
-	got, err := resolveInlineOrFileBytes("@" + p)
+	got, err := resolveInlineOrFileBytes("@"+p, strings.NewReader(""))
 	if err != nil {
 		t.Fatalf("resolve: %v", err)
 	}
@@ -33,25 +34,21 @@ func TestResolveInlineOrFileBytes_File(t *testing.T) {
 }
 
 func TestResolveInlineOrFileBytes_Stdin(t *testing.T) {
-	withStdin(t, `{"from":"stdin"}`, func() {
-		got, err := resolveInlineOrFileBytes("-")
-		if err != nil {
-			t.Fatalf("resolve: %v", err)
-		}
-		if string(got) != `{"from":"stdin"}` {
-			t.Fatalf("unexpected: %q", string(got))
-		}
-	})
+	got, err := resolveInlineOrFileBytes("-", strings.NewReader(`{"from":"stdin"}`))
+	if err != nil {
+		t.Fatalf("resolve: %v", err)
+	}
+	if string(got) != `{"from":"stdin"}` {
+		t.Fatalf("unexpected: %q", string(got))
+	}
 }
 
 func TestResolveInlineOrFileBytes_AtStdin(t *testing.T) {
-	withStdin(t, `{"from":"@-"}`, func() {
-		got, err := resolveInlineOrFileBytes("@-")
-		if err != nil {
-			t.Fatalf("resolve: %v", err)
-		}
-		if string(got) != `{"from":"@-"}` {
-			t.Fatalf("unexpected: %q", string(got))
-		}
-	})
+	got, err := resolveInlineOrFileBytes("@-", strings.NewReader(`{"from":"@-"}`))
+	if err != nil {
+		t.Fatalf("resolve: %v", err)
+	}
+	if string(got) != `{"from":"@-"}` {
+		t.Fatalf("unexpected: %q", string(got))
+	}
 }

@@ -1,7 +1,7 @@
 package cmd
 
 import (
-	"context"
+	"bytes"
 	"encoding/json"
 	"io"
 	"net/http"
@@ -10,10 +10,6 @@ import (
 	"testing"
 
 	"google.golang.org/api/gmail/v1"
-	"google.golang.org/api/option"
-
-	"github.com/steipete/gogcli/internal/outfmt"
-	"github.com/steipete/gogcli/internal/ui"
 )
 
 func newLabelsServer(t *testing.T, listLabels []map[string]any, handleCreate func(http.ResponseWriter, *http.Request)) *httptest.Server {
@@ -36,27 +32,12 @@ func newLabelsServer(t *testing.T, listLabels []map[string]any, handleCreate fun
 	}))
 }
 
-func stubGmailService(t *testing.T, srv *httptest.Server) {
+func newLabelsService(t *testing.T, srv *httptest.Server) *gmail.Service {
 	t.Helper()
-
-	origNew := newGmailService
-	t.Cleanup(func() { newGmailService = origNew })
-
-	svc, err := gmail.NewService(context.Background(),
-		option.WithoutAuthentication(),
-		option.WithHTTPClient(srv.Client()),
-		option.WithEndpoint(srv.URL+"/"),
-	)
-	if err != nil {
-		t.Fatalf("NewService: %v", err)
-	}
-	newGmailService = func(context.Context, string) (*gmail.Service, error) { return svc, nil }
+	return newGmailServiceFromServer(t, srv)
 }
 
 func TestGmailLabelsGetCmd_JSON(t *testing.T) {
-	origNew := newGmailService
-	t.Cleanup(func() { newGmailService = origNew })
-
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch {
 		case strings.HasSuffix(r.URL.Path, "/users/me/labels") || strings.HasSuffix(r.URL.Path, "/gmail/v1/users/me/labels"):
@@ -96,33 +77,14 @@ func TestGmailLabelsGetCmd_JSON(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	svc, err := gmail.NewService(context.Background(),
-		option.WithoutAuthentication(),
-		option.WithHTTPClient(srv.Client()),
-		option.WithEndpoint(srv.URL+"/"),
-	)
-	if err != nil {
-		t.Fatalf("NewService: %v", err)
-	}
-	newGmailService = func(context.Context, string) (*gmail.Service, error) {
-		return svc, nil
-	}
-
+	svc := newLabelsService(t, srv)
 	flags := &RootFlags{Account: "a@b.com"}
 
-	out := captureStdout(t, func() {
-		u, uiErr := ui.New(ui.Options{Stdout: io.Discard, Stderr: io.Discard, Color: "never"})
-		if uiErr != nil {
-			t.Fatalf("ui.New: %v", uiErr)
-		}
-		ctx := ui.WithUI(context.Background(), u)
-		ctx = outfmt.WithMode(ctx, outfmt.Mode{JSON: true})
-
-		cmd := &GmailLabelsGetCmd{}
-		if err := runKong(t, cmd, []string{"INBOX"}, ctx, flags); err != nil {
-			t.Fatalf("execute: %v", err)
-		}
-	})
+	var out bytes.Buffer
+	ctx := withGmailTestService(newCmdRuntimeJSONOutputContext(t, &out, io.Discard), svc)
+	if err := runKong(t, &GmailLabelsGetCmd{}, []string{"INBOX"}, ctx, flags); err != nil {
+		t.Fatalf("execute: %v", err)
+	}
 
 	var parsed struct {
 		Label struct {
@@ -132,8 +94,8 @@ func TestGmailLabelsGetCmd_JSON(t *testing.T) {
 			MessagesUnread int64  `json:"messagesUnread"`
 		} `json:"label"`
 	}
-	if err := json.Unmarshal([]byte(out), &parsed); err != nil {
-		t.Fatalf("json parse: %v\nout=%q", err, out)
+	if err := json.Unmarshal(out.Bytes(), &parsed); err != nil {
+		t.Fatalf("json parse: %v\nout=%q", err, out.String())
 	}
 	if parsed.Label.ID != "INBOX" || parsed.Label.Name != "INBOX" {
 		t.Fatalf("unexpected label: %#v", parsed.Label)
@@ -143,10 +105,58 @@ func TestGmailLabelsGetCmd_JSON(t *testing.T) {
 	}
 }
 
-func TestGmailLabelsListCmd_TextAndJSON(t *testing.T) {
-	origNew := newGmailService
-	t.Cleanup(func() { newGmailService = origNew })
+func TestGmailLabelsGetCmd_ExactIDBeatsCaseFoldedName(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case strings.HasSuffix(r.URL.Path, "/users/me/labels") || strings.HasSuffix(r.URL.Path, "/gmail/v1/users/me/labels"):
+			w.Header().Set("Content-Type", "application/json")
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"labels": []map[string]any{
+					{"id": "Label_9", "name": "Original", "type": "user"},
+					{"id": "Label_10", "name": "label_9", "type": "user"},
+				},
+			})
+			return
+		case strings.Contains(r.URL.Path, "/users/me/labels/") || strings.Contains(r.URL.Path, "/gmail/v1/users/me/labels/"):
+			id := r.URL.Path[strings.LastIndex(r.URL.Path, "/")+1:]
+			if id != "Label_9" {
+				http.NotFound(w, r)
+				return
+			}
+			w.Header().Set("Content-Type", "application/json")
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"id":   "Label_9",
+				"name": "Original",
+				"type": "user",
+			})
+			return
+		default:
+			http.NotFound(w, r)
+			return
+		}
+	}))
+	defer srv.Close()
+	svc := newLabelsService(t, srv)
+	var out bytes.Buffer
+	ctx := withGmailTestService(newCmdRuntimeJSONOutputContext(t, &out, io.Discard), svc)
+	if err := runKong(t, &GmailLabelsGetCmd{}, []string{"Label_9"}, ctx, &RootFlags{Account: "a@b.com"}); err != nil {
+		t.Fatalf("execute: %v", err)
+	}
 
+	var parsed struct {
+		Label struct {
+			ID string `json:"id"`
+		} `json:"label"`
+	}
+	if err := json.Unmarshal(out.Bytes(), &parsed); err != nil {
+		t.Fatalf("json parse: %v\nout=%q", err, out.String())
+	}
+	if parsed.Label.ID != "Label_9" {
+		t.Fatalf("exact ID was shadowed: %#v", parsed.Label)
+	}
+}
+
+func TestGmailLabelsListCmd_TextAndJSON(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch {
 		case strings.HasSuffix(r.URL.Path, "/users/me/labels") || strings.HasSuffix(r.URL.Path, "/gmail/v1/users/me/labels"):
@@ -165,58 +175,32 @@ func TestGmailLabelsListCmd_TextAndJSON(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	svc, err := gmail.NewService(context.Background(),
-		option.WithoutAuthentication(),
-		option.WithHTTPClient(srv.Client()),
-		option.WithEndpoint(srv.URL+"/"),
-	)
-	if err != nil {
-		t.Fatalf("NewService: %v", err)
-	}
-	newGmailService = func(context.Context, string) (*gmail.Service, error) { return svc, nil }
-
+	svc := newLabelsService(t, srv)
 	flags := &RootFlags{Account: "a@b.com"}
 
-	// Text output uses tabwriter to os.Stdout.
-	textOut := captureStdout(t, func() {
-		u, uiErr := ui.New(ui.Options{Stdout: io.Discard, Stderr: io.Discard, Color: "never"})
-		if uiErr != nil {
-			t.Fatalf("ui.New: %v", uiErr)
-		}
-		ctx := ui.WithUI(context.Background(), u)
-		ctx = outfmt.WithMode(ctx, outfmt.Mode{})
-
-		cmd := &GmailLabelsListCmd{}
-		if err := runKong(t, cmd, []string{}, ctx, flags); err != nil {
-			t.Fatalf("execute: %v", err)
-		}
-	})
-	if !strings.Contains(textOut, "ID") || !strings.Contains(textOut, "NAME") {
-		t.Fatalf("unexpected output: %q", textOut)
+	var textOut bytes.Buffer
+	textCtx := withGmailTestService(newCmdRuntimeOutputContext(t, &textOut, io.Discard), svc)
+	if err := runKong(t, &GmailLabelsListCmd{}, []string{}, textCtx, flags); err != nil {
+		t.Fatalf("execute: %v", err)
 	}
-	if !strings.Contains(textOut, "INBOX") || !strings.Contains(textOut, "Custom") {
-		t.Fatalf("missing labels: %q", textOut)
+	if !strings.Contains(textOut.String(), "ID") || !strings.Contains(textOut.String(), "NAME") {
+		t.Fatalf("unexpected output: %q", textOut.String())
+	}
+	if !strings.Contains(textOut.String(), "INBOX") || !strings.Contains(textOut.String(), "Custom") {
+		t.Fatalf("missing labels: %q", textOut.String())
 	}
 
-	jsonOut := captureStdout(t, func() {
-		u, uiErr := ui.New(ui.Options{Stdout: io.Discard, Stderr: io.Discard, Color: "never"})
-		if uiErr != nil {
-			t.Fatalf("ui.New: %v", uiErr)
-		}
-		ctx := ui.WithUI(context.Background(), u)
-		ctx = outfmt.WithMode(ctx, outfmt.Mode{JSON: true})
-
-		cmd := &GmailLabelsListCmd{}
-		if err := runKong(t, cmd, []string{}, ctx, flags); err != nil {
-			t.Fatalf("execute: %v", err)
-		}
-	})
+	var jsonOut bytes.Buffer
+	jsonCtx := withGmailTestService(newCmdRuntimeJSONOutputContext(t, &jsonOut, io.Discard), svc)
+	if err := runKong(t, &GmailLabelsListCmd{}, []string{}, jsonCtx, flags); err != nil {
+		t.Fatalf("execute: %v", err)
+	}
 
 	var parsed struct {
 		Labels []*gmail.Label `json:"labels"`
 	}
-	if err := json.Unmarshal([]byte(jsonOut), &parsed); err != nil {
-		t.Fatalf("json parse: %v\nout=%q", err, jsonOut)
+	if err := json.Unmarshal(jsonOut.Bytes(), &parsed); err != nil {
+		t.Fatalf("json parse: %v\nout=%q", err, jsonOut.String())
 	}
 	if len(parsed.Labels) != 2 {
 		t.Fatalf("unexpected labels: %#v", parsed.Labels)
@@ -224,9 +208,6 @@ func TestGmailLabelsListCmd_TextAndJSON(t *testing.T) {
 }
 
 func TestGmailLabelsModifyCmd_JSON(t *testing.T) {
-	origNew := newGmailService
-	t.Cleanup(func() { newGmailService = origNew })
-
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch {
 		case r.Method == http.MethodGet && (strings.HasSuffix(r.URL.Path, "/users/me/labels") || strings.HasSuffix(r.URL.Path, "/gmail/v1/users/me/labels")):
@@ -275,31 +256,14 @@ func TestGmailLabelsModifyCmd_JSON(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	svc, err := gmail.NewService(context.Background(),
-		option.WithoutAuthentication(),
-		option.WithHTTPClient(srv.Client()),
-		option.WithEndpoint(srv.URL+"/"),
-	)
-	if err != nil {
-		t.Fatalf("NewService: %v", err)
-	}
-	newGmailService = func(context.Context, string) (*gmail.Service, error) { return svc, nil }
-
+	svc := newLabelsService(t, srv)
 	flags := &RootFlags{Account: "a@b.com"}
 
-	out := captureStdout(t, func() {
-		u, uiErr := ui.New(ui.Options{Stdout: io.Discard, Stderr: io.Discard, Color: "never"})
-		if uiErr != nil {
-			t.Fatalf("ui.New: %v", uiErr)
-		}
-		ctx := ui.WithUI(context.Background(), u)
-		ctx = outfmt.WithMode(ctx, outfmt.Mode{JSON: true})
-
-		cmd := &GmailLabelsModifyCmd{}
-		if err := runKong(t, cmd, []string{"t1", "t2", "--add", "INBOX", "--remove", "Custom"}, ctx, flags); err != nil {
-			t.Fatalf("execute: %v", err)
-		}
-	})
+	var out bytes.Buffer
+	ctx := withGmailTestService(newCmdRuntimeJSONOutputContext(t, &out, io.Discard), svc)
+	if err := runKong(t, &GmailLabelsModifyCmd{}, []string{"t1", "t2", "--add", "INBOX", "--remove", "Custom"}, ctx, flags); err != nil {
+		t.Fatalf("execute: %v", err)
+	}
 
 	var parsed struct {
 		Results []struct {
@@ -308,8 +272,8 @@ func TestGmailLabelsModifyCmd_JSON(t *testing.T) {
 			Error    string `json:"error"`
 		} `json:"results"`
 	}
-	if err := json.Unmarshal([]byte(out), &parsed); err != nil {
-		t.Fatalf("json parse: %v\nout=%q", err, out)
+	if err := json.Unmarshal(out.Bytes(), &parsed); err != nil {
+		t.Fatalf("json parse: %v\nout=%q", err, out.String())
 	}
 	if len(parsed.Results) != 2 {
 		t.Fatalf("unexpected results: %#v", parsed.Results)
@@ -350,23 +314,15 @@ func TestGmailLabelsCreateCmd_JSON(t *testing.T) {
 		})
 	})
 	defer srv.Close()
-	stubGmailService(t, srv)
+	svc := newLabelsService(t, srv)
 
 	flags := &RootFlags{Account: "a@b.com"}
 
-	out := captureStdout(t, func() {
-		u, uiErr := ui.New(ui.Options{Stdout: io.Discard, Stderr: io.Discard, Color: "never"})
-		if uiErr != nil {
-			t.Fatalf("ui.New: %v", uiErr)
-		}
-		ctx := ui.WithUI(context.Background(), u)
-		ctx = outfmt.WithMode(ctx, outfmt.Mode{JSON: true})
-
-		cmd := &GmailLabelsCreateCmd{}
-		if err := runKong(t, cmd, []string{"Test Label"}, ctx, flags); err != nil {
-			t.Fatalf("execute: %v", err)
-		}
-	})
+	var out bytes.Buffer
+	ctx := withGmailTestService(newCmdRuntimeJSONOutputContext(t, &out, io.Discard), svc)
+	if err := runKong(t, &GmailLabelsCreateCmd{}, []string{"Test Label"}, ctx, flags); err != nil {
+		t.Fatalf("execute: %v", err)
+	}
 
 	var parsed struct {
 		Label struct {
@@ -374,8 +330,8 @@ func TestGmailLabelsCreateCmd_JSON(t *testing.T) {
 			Name string `json:"name"`
 		} `json:"label"`
 	}
-	if err := json.Unmarshal([]byte(out), &parsed); err != nil {
-		t.Fatalf("json parse: %v\nout=%q", err, out)
+	if err := json.Unmarshal(out.Bytes(), &parsed); err != nil {
+		t.Fatalf("json parse: %v\nout=%q", err, out.String())
 	}
 	if parsed.Label.ID != "Label_123" {
 		t.Fatalf("unexpected id: %q", parsed.Label.ID)
@@ -395,20 +351,14 @@ func TestGmailLabelsCreateCmd_Text(t *testing.T) {
 		})
 	})
 	defer srv.Close()
-	stubGmailService(t, srv)
+	svc := newLabelsService(t, srv)
 
 	flags := &RootFlags{Account: "a@b.com"}
 
 	var buf strings.Builder
-	u, uiErr := ui.New(ui.Options{Stdout: &buf, Stderr: io.Discard, Color: "never"})
-	if uiErr != nil {
-		t.Fatalf("ui.New: %v", uiErr)
-	}
-	ctx := ui.WithUI(context.Background(), u)
-	ctx = outfmt.WithMode(ctx, outfmt.Mode{})
+	ctx := withGmailTestService(newCmdRuntimeOutputContext(t, &buf, io.Discard), svc)
 
-	cmd := &GmailLabelsCreateCmd{}
-	if err := runKong(t, cmd, []string{"My Label"}, ctx, flags); err != nil {
+	if err := runKong(t, &GmailLabelsCreateCmd{}, []string{"My Label"}, ctx, flags); err != nil {
 		t.Fatalf("execute: %v", err)
 	}
 
@@ -425,35 +375,11 @@ func TestGmailLabelsCreateCmd_Text(t *testing.T) {
 }
 
 func TestGmailLabelsCreateCmd_EmptyName(t *testing.T) {
-	origNew := newGmailService
-	t.Cleanup(func() { newGmailService = origNew })
-
-	// Server shouldn't be called for empty name validation
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		t.Fatal("API should not be called for empty name")
-	}))
-	defer srv.Close()
-
-	svc, err := gmail.NewService(context.Background(),
-		option.WithoutAuthentication(),
-		option.WithHTTPClient(srv.Client()),
-		option.WithEndpoint(srv.URL+"/"),
-	)
-	if err != nil {
-		t.Fatalf("NewService: %v", err)
-	}
-	newGmailService = func(context.Context, string) (*gmail.Service, error) { return svc, nil }
-
 	flags := &RootFlags{Account: "a@b.com"}
-
-	u, uiErr := ui.New(ui.Options{Stdout: io.Discard, Stderr: io.Discard, Color: "never"})
-	if uiErr != nil {
-		t.Fatalf("ui.New: %v", uiErr)
-	}
-	ctx := ui.WithUI(context.Background(), u)
+	ctx := newCmdRuntimeOutputContext(t, io.Discard, io.Discard)
 
 	cmd := &GmailLabelsCreateCmd{Name: "   "} // whitespace-only name
-	err = cmd.Run(ctx, flags)
+	err := cmd.Run(ctx, flags)
 	if err == nil {
 		t.Fatal("expected error for empty name")
 	}
@@ -469,21 +395,43 @@ func TestGmailLabelsCreateCmd_DuplicateName_Preflight(t *testing.T) {
 		t.Fatalf("create should not be called when label exists")
 	})
 	defer srv.Close()
-	stubGmailService(t, srv)
+	svc := newLabelsService(t, srv)
 
 	flags := &RootFlags{Account: "a@b.com"}
-
-	u, uiErr := ui.New(ui.Options{Stdout: io.Discard, Stderr: io.Discard, Color: "never"})
-	if uiErr != nil {
-		t.Fatalf("ui.New: %v", uiErr)
-	}
-	ctx := ui.WithUI(context.Background(), u)
+	ctx := withGmailTestService(newCmdRuntimeOutputContext(t, io.Discard, io.Discard), svc)
 
 	cmd := &GmailLabelsCreateCmd{}
 	if err := runKong(t, cmd, []string{"My Label"}, ctx, flags); err == nil {
 		t.Fatal("expected error for duplicate label name")
 	} else if !strings.Contains(err.Error(), "label already exists") {
 		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+func TestEnsureLabelNameAvailable_DoesNotCaseFoldIDs(t *testing.T) {
+	srv := newLabelsServer(t, []map[string]any{
+		{"id": "Label_9", "name": "Different Name", "type": "user"},
+	}, nil)
+	defer srv.Close()
+
+	svc := newLabelsService(t, srv)
+
+	if err := ensureLabelNameAvailable(svc, "label_9"); err != nil {
+		t.Fatalf("label ID should not collide with name: %v", err)
+	}
+}
+
+func TestEnsureLabelNameAvailable_BlocksExactIDCollision(t *testing.T) {
+	srv := newLabelsServer(t, []map[string]any{
+		{"id": "Label_9", "name": "Different Name", "type": "user"},
+	}, nil)
+	defer srv.Close()
+
+	svc := newLabelsService(t, srv)
+
+	err := ensureLabelNameAvailable(svc, "Label_9")
+	if err == nil || !strings.Contains(err.Error(), "label already exists") {
+		t.Fatalf("expected exact ID collision error, got: %v", err)
 	}
 }
 
@@ -502,21 +450,137 @@ func TestGmailLabelsCreateCmd_DuplicateName_APIError(t *testing.T) {
 		})
 	})
 	defer srv.Close()
-	stubGmailService(t, srv)
+	svc := newLabelsService(t, srv)
 
 	flags := &RootFlags{Account: "a@b.com"}
-
-	u, uiErr := ui.New(ui.Options{Stdout: io.Discard, Stderr: io.Discard, Color: "never"})
-	if uiErr != nil {
-		t.Fatalf("ui.New: %v", uiErr)
-	}
-	ctx := ui.WithUI(context.Background(), u)
+	ctx := withGmailTestService(newCmdRuntimeOutputContext(t, io.Discard, io.Discard), svc)
 
 	cmd := &GmailLabelsCreateCmd{}
 	if err := runKong(t, cmd, []string{"My Label"}, ctx, flags); err == nil {
 		t.Fatal("expected error for duplicate label name")
 	} else if !strings.Contains(err.Error(), "label already exists") {
 		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+func TestGmailLabelsStyleCmd_PatchColorAndVisibility(t *testing.T) {
+	var gotPatch bool
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.Method == http.MethodGet && (strings.HasSuffix(r.URL.Path, "/users/me/labels") || strings.HasSuffix(r.URL.Path, "/gmail/v1/users/me/labels")):
+			w.Header().Set("Content-Type", "application/json")
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"labels": []map[string]any{{"id": "Label_1", "name": "Custom", "type": "user"}},
+			})
+			return
+		case r.Method == http.MethodGet && strings.HasSuffix(r.URL.Path, "/labels/Custom"):
+			http.NotFound(w, r)
+			return
+		case r.Method == http.MethodGet && strings.HasSuffix(r.URL.Path, "/labels/Label_1"):
+			w.Header().Set("Content-Type", "application/json")
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"id":   "Label_1",
+				"name": "Custom",
+				"type": "user",
+				"color": map[string]any{
+					"textColor":       "#000000",
+					"backgroundColor": "#ffffff",
+				},
+			})
+			return
+		case r.Method == http.MethodPatch && strings.HasSuffix(r.URL.Path, "/labels/Label_1"):
+			gotPatch = true
+			var body struct {
+				Color struct {
+					TextColor       string `json:"textColor"`
+					BackgroundColor string `json:"backgroundColor"`
+				} `json:"color"`
+				LabelListVisibility   string `json:"labelListVisibility"`
+				MessageListVisibility string `json:"messageListVisibility"`
+			}
+			if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+				t.Fatalf("decode patch: %v", err)
+			}
+			if body.Color.TextColor != "#fce8b3" || body.Color.BackgroundColor != "#ffffff" {
+				t.Fatalf("unexpected color patch: %#v", body.Color)
+			}
+			if body.LabelListVisibility != "labelShowIfUnread" || body.MessageListVisibility != "hide" {
+				t.Fatalf("unexpected visibility patch: %#v", body)
+			}
+			w.Header().Set("Content-Type", "application/json")
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"id":                    "Label_1",
+				"name":                  "Custom",
+				"type":                  "user",
+				"labelListVisibility":   body.LabelListVisibility,
+				"messageListVisibility": body.MessageListVisibility,
+				"color": map[string]any{
+					"textColor":       body.Color.TextColor,
+					"backgroundColor": body.Color.BackgroundColor,
+				},
+			})
+			return
+		default:
+			http.NotFound(w, r)
+			return
+		}
+	}))
+	defer srv.Close()
+	svc := newLabelsService(t, srv)
+	var out bytes.Buffer
+	ctx := withGmailTestService(newCmdRuntimeJSONOutputContext(t, &out, io.Discard), svc)
+	err := runKong(t, &GmailLabelsStyleCmd{}, []string{
+		"Custom",
+		"--text-color", "#fce8b3",
+		"--label-list-visibility", "labelShowIfUnread",
+		"--message-list-visibility", "hide",
+	}, ctx, &RootFlags{Account: "a@b.com"})
+	if err != nil {
+		t.Fatalf("execute: %v", err)
+	}
+	if !gotPatch {
+		t.Fatal("expected patch call")
+	}
+	if !strings.Contains(out.String(), `"textColor": "#fce8b3"`) {
+		t.Fatalf("missing color in output: %q", out.String())
+	}
+}
+
+func TestGmailLabelsStyleCmd_RejectsOffPaletteColor(t *testing.T) {
+	ctx := newCmdRuntimeOutputContext(t, io.Discard, io.Discard)
+
+	cmd := &GmailLabelsStyleCmd{}
+	err := runKong(t, cmd, []string{"Custom", "--background-color", "#112233"}, ctx, &RootFlags{Account: "a@b.com"})
+	if err == nil || !strings.Contains(err.Error(), "Gmail's label palette") {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+func TestGmailLabelsStyleCmd_RejectsSystemLabel(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet || !strings.HasSuffix(r.URL.Path, "/labels/INBOX") {
+			http.NotFound(w, r)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"id":   "INBOX",
+			"name": "INBOX",
+			"type": "system",
+		})
+	}))
+	defer srv.Close()
+	svc := newLabelsService(t, srv)
+	ctx := withGmailTestService(newCmdRuntimeOutputContext(t, io.Discard, io.Discard), svc)
+
+	cmd := &GmailLabelsStyleCmd{}
+	err := runKong(t, cmd, []string{"INBOX", "--background-color", "#fce8b3"}, ctx, &RootFlags{Account: "a@b.com"})
+	if err == nil || !strings.Contains(err.Error(), "cannot style system label") {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if got := ExitCode(err); got != 2 {
+		t.Fatalf("expected usage exit code 2, got %d (err=%v)", got, err)
 	}
 }
 
@@ -537,14 +601,7 @@ func TestFetchLabelIDToName(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	svc, err := gmail.NewService(context.Background(),
-		option.WithoutAuthentication(),
-		option.WithHTTPClient(srv.Client()),
-		option.WithEndpoint(srv.URL+"/"),
-	)
-	if err != nil {
-		t.Fatalf("NewService: %v", err)
-	}
+	svc := newLabelsService(t, srv)
 
 	m, err := fetchLabelIDToName(svc)
 	if err != nil {
@@ -559,5 +616,37 @@ func TestFetchLabelIDToName(t *testing.T) {
 	// If name is missing, fall back to ID.
 	if m["Label_2"] != "Label_2" {
 		t.Fatalf("unexpected label2: %q", m["Label_2"])
+	}
+}
+
+func TestFetchLabelNameToID_DoesNotCaseFoldIDs(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if !(strings.HasSuffix(r.URL.Path, "/users/me/labels") || strings.HasSuffix(r.URL.Path, "/gmail/v1/users/me/labels")) {
+			http.NotFound(w, r)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"labels": []map[string]any{
+				{"id": "Label_1", "name": "Custom", "type": "user"},
+			},
+		})
+	}))
+	defer srv.Close()
+
+	svc := newLabelsService(t, srv)
+
+	m, err := fetchLabelNameToID(svc)
+	if err != nil {
+		t.Fatalf("fetchLabelNameToID: %v", err)
+	}
+	if m["custom"] != "Label_1" {
+		t.Fatalf("missing case-folded name lookup: %#v", m)
+	}
+	if m["Label_1"] != "Label_1" {
+		t.Fatalf("missing exact ID lookup: %#v", m)
+	}
+	if _, ok := m["label_1"]; ok {
+		t.Fatalf("case-folded label ID should not resolve: %#v", m)
 	}
 }

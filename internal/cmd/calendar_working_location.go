@@ -3,13 +3,9 @@ package cmd
 import (
 	"context"
 	"fmt"
-	"os"
 	"strings"
 
 	"google.golang.org/api/calendar/v3"
-
-	"github.com/steipete/gogcli/internal/outfmt"
-	"github.com/steipete/gogcli/internal/ui"
 )
 
 type CalendarWorkingLocationCmd struct {
@@ -25,11 +21,23 @@ type CalendarWorkingLocationCmd struct {
 }
 
 func (c *CalendarWorkingLocationCmd) Run(ctx context.Context, flags *RootFlags) error {
-	u := ui.FromContext(ctx)
-	calendarID := strings.TrimSpace(c.CalendarID)
+	store, err := commandConfigStore(ctx)
+	if err != nil {
+		return err
+	}
+	calendarID, err := prepareCalendarID(store, c.CalendarID, true)
+	if err != nil {
+		return err
+	}
 	props, err := c.buildWorkingLocationProperties()
 	if err != nil {
 		return err
+	}
+	if validateErr := validateCalendarDateFlag("--from", c.From); validateErr != nil {
+		return validateErr
+	}
+	if validateErr := validateCalendarDateFlag("--to", c.To); validateErr != nil {
+		return validateErr
 	}
 
 	summary := c.generateSummary()
@@ -39,42 +47,28 @@ func (c *CalendarWorkingLocationCmd) Run(ctx context.Context, flags *RootFlags) 
 		Start:                     &calendar.EventDateTime{Date: strings.TrimSpace(c.From)},
 		End:                       &calendar.EventDateTime{Date: strings.TrimSpace(c.To)},
 		EventType:                 eventTypeWorkingLocation,
+		Visibility:                visibilityPublic,
+		Transparency:              transparencyTransparent,
 		WorkingLocationProperties: props,
 	}
 
-	if dryRunErr := dryRunExit(ctx, flags, "calendar.working_location", map[string]any{
+	if dryRunErr := dryRunExit(ctx, flags, "calendar.working-location", map[string]any{
 		"calendar_id": calendarID,
 		"event":       event,
 	}); dryRunErr != nil {
 		return dryRunErr
 	}
 
-	account, err := requireAccount(flags)
+	mutation, err := newCalendarMutationContext(ctx, flags, calendarID)
 	if err != nil {
 		return err
 	}
 
-	svc, err := newCalendarService(ctx, account)
+	created, err := mutation.insertEvent(ctx, event, calendarInsertOptions{})
 	if err != nil {
 		return err
 	}
-
-	calendarID, err = resolveCalendarID(ctx, svc, calendarID)
-	if err != nil {
-		return err
-	}
-
-	created, err := svc.Events.Insert(calendarID, event).Do()
-	if err != nil {
-		return err
-	}
-
-	tz, loc, _ := getCalendarLocation(ctx, svc, calendarID)
-	if outfmt.IsJSON(ctx) {
-		return outfmt.WriteJSON(ctx, os.Stdout, map[string]any{"event": wrapEventWithDaysWithTimezone(created, tz, loc)})
-	}
-	printCalendarEventWithTimezone(u, created, tz, loc)
-	return nil
+	return mutation.writeEvent(ctx, created)
 }
 
 func (c *CalendarWorkingLocationCmd) buildWorkingLocationProperties() (*calendar.EventWorkingLocationProperties, error) {
@@ -123,14 +117,14 @@ func buildWorkingLocationProperties(input workingLocationInput) (*calendar.Event
 		}
 	case "custom":
 		if strings.TrimSpace(input.CustomLabel) == "" {
-			return nil, fmt.Errorf("--custom-label is required for type=custom")
+			return nil, usage("--custom-label is required for type=custom")
 		}
 		props.Type = "customLocation"
 		props.CustomLocation = &calendar.EventWorkingLocationPropertiesCustomLocation{
 			Label: strings.TrimSpace(input.CustomLabel),
 		}
 	default:
-		return nil, fmt.Errorf("invalid location type: %q (must be home, office, or custom)", locType)
+		return nil, usagef("invalid location type: %q (must be home, office, or custom)", locType)
 	}
 
 	return props, nil

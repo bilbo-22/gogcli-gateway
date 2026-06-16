@@ -13,18 +13,12 @@ import (
 	"time"
 
 	"google.golang.org/api/gmail/v1"
-	"google.golang.org/api/option"
 
-	"github.com/steipete/gogcli/internal/outfmt"
-	"github.com/steipete/gogcli/internal/ui"
+	"github.com/steipete/gogcli/internal/gmailwatch"
 )
 
 func TestGmailWatchStartCmd_JSON(t *testing.T) {
-	origNew := newGmailService
-	t.Cleanup(func() { newGmailService = origNew })
-
-	home := t.TempDir()
-	t.Setenv("HOME", home)
+	setWatchTestConfigHome(t)
 
 	var watchReq struct {
 		TopicName string   `json:"topicName"`
@@ -58,37 +52,22 @@ func TestGmailWatchStartCmd_JSON(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	svc, err := gmail.NewService(context.Background(),
-		option.WithoutAuthentication(),
-		option.WithHTTPClient(srv.Client()),
-		option.WithEndpoint(srv.URL+"/"),
-	)
-	if err != nil {
-		t.Fatalf("NewService: %v", err)
-	}
-	newGmailService = func(context.Context, string) (*gmail.Service, error) { return svc, nil }
+	svc := newGmailServiceFromServer(t, srv)
 
 	flags := &RootFlags{Account: "a@b.com"}
-	out := captureStdout(t, func() {
-		u, uiErr := ui.New(ui.Options{Stdout: io.Discard, Stderr: io.Discard, Color: "never"})
-		if uiErr != nil {
-			t.Fatalf("ui.New: %v", uiErr)
-		}
-		ctx := ui.WithUI(context.Background(), u)
-		ctx = outfmt.WithMode(ctx, outfmt.Mode{JSON: true})
-
-		if execErr := runKong(t, &GmailWatchStartCmd{}, []string{
-			"--topic", "projects/p/topics/t",
-			"--label", "INBOX",
-			"--label", "Custom",
-			"--hook-url", "http://127.0.0.1:1/hooks",
-			"--hook-token", "tok",
-			"--include-body",
-			"--max-bytes", "5",
-		}, ctx, flags); execErr != nil {
-			t.Fatalf("execute: %v", execErr)
-		}
-	})
+	var out bytes.Buffer
+	ctx := withGmailTestService(newCmdRuntimeJSONOutputContext(t, &out, io.Discard), svc)
+	if execErr := runKong(t, &GmailWatchStartCmd{}, []string{
+		"--topic", "projects/p/topics/t",
+		"--label", "INBOX",
+		"--label", "Custom",
+		"--hook-url", "http://127.0.0.1:1/hooks",
+		"--hook-token", "tok",
+		"--include-body",
+		"--max-bytes", "5",
+	}, ctx, flags); execErr != nil {
+		t.Fatalf("execute: %v", execErr)
+	}
 
 	if watchReq.TopicName != "projects/p/topics/t" {
 		t.Fatalf("unexpected topic: %#v", watchReq)
@@ -100,7 +79,7 @@ func TestGmailWatchStartCmd_JSON(t *testing.T) {
 	var parsed struct {
 		Watch gmailWatchState `json:"watch"`
 	}
-	if parseErr := json.Unmarshal([]byte(out), &parsed); parseErr != nil {
+	if parseErr := json.Unmarshal(out.Bytes(), &parsed); parseErr != nil {
 		t.Fatalf("json parse: %v", parseErr)
 	}
 	if parsed.Watch.HistoryID != "123" {
@@ -113,26 +92,16 @@ func TestGmailWatchStartCmd_JSON(t *testing.T) {
 		t.Fatalf("unexpected max bytes: %#v", parsed.Watch.Hook)
 	}
 
-	store, err := loadGmailWatchStore("a@b.com")
-	if err != nil {
-		t.Fatalf("load store: %v", err)
-	}
+	store := loadGmailWatchTestStore(t, "a@b.com")
 	if store.Get().HistoryID != "123" {
 		t.Fatalf("store missing history: %#v", store.Get())
 	}
 }
 
 func TestGmailWatchServerServeHTTP_TruncateBody(t *testing.T) {
-	origNew := newGmailService
-	t.Cleanup(func() { newGmailService = origNew })
+	setWatchTestConfigHome(t)
 
-	home := t.TempDir()
-	t.Setenv("HOME", home)
-
-	store, err := newGmailWatchStore("me@example.com")
-	if err != nil {
-		t.Fatalf("store: %v", err)
-	}
+	store := newGmailWatchTestStore(t, "me@example.com")
 	if updateErr := store.Update(func(s *gmailWatchState) error {
 		*s = gmailWatchState{Account: "me@example.com", HistoryID: "100"}
 		return nil
@@ -182,15 +151,7 @@ func TestGmailWatchServerServeHTTP_TruncateBody(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	svc, err := gmail.NewService(context.Background(),
-		option.WithoutAuthentication(),
-		option.WithHTTPClient(srv.Client()),
-		option.WithEndpoint(srv.URL+"/"),
-	)
-	if err != nil {
-		t.Fatalf("NewService: %v", err)
-	}
-	newGmailService = func(context.Context, string) (*gmail.Service, error) { return svc, nil }
+	svc := newGmailServiceFromServer(t, srv)
 
 	hookServer := &gmailWatchServer{
 		cfg: gmailWatchServeConfig{
@@ -204,7 +165,7 @@ func TestGmailWatchServerServeHTTP_TruncateBody(t *testing.T) {
 			AllowNoHook:  true,
 		},
 		store:      store,
-		newService: newGmailService,
+		newService: func(context.Context, string) (*gmail.Service, error) { return svc, nil },
 		hookClient: &http.Client{Timeout: time.Second},
 		logf:       func(string, ...any) {},
 		warnf:      func(string, ...any) {},
@@ -215,7 +176,7 @@ func TestGmailWatchServerServeHTTP_TruncateBody(t *testing.T) {
 	env.Message.Data = base64.StdEncoding.EncodeToString(payload)
 
 	data, _ := json.Marshal(env)
-	req := httptest.NewRequest(http.MethodPost, "http://example.com/gmail-pubsub", bytes.NewReader(data))
+	req := httptest.NewRequestWithContext(context.Background(), http.MethodPost, "http://example.com/gmail-pubsub", bytes.NewReader(data))
 	req.Header.Set("x-gog-token", "token")
 	rec := httptest.NewRecorder()
 
@@ -249,7 +210,7 @@ func TestDecodeGmailPushPayload_NumberHistoryID(t *testing.T) {
 
 	env := &pubsubPushEnvelope{}
 	env.Message.Data = base64.StdEncoding.EncodeToString(payload)
-	got, err := decodeGmailPushPayload(env)
+	got, err := gmailwatch.DecodePushPayload(env)
 	if err != nil {
 		t.Fatalf("decode: %v", err)
 	}
@@ -269,7 +230,7 @@ func TestDecodeGmailPushPayload_StringHistoryID(t *testing.T) {
 
 	env := &pubsubPushEnvelope{}
 	env.Message.Data = base64.StdEncoding.EncodeToString(payload)
-	got, err := decodeGmailPushPayload(env)
+	got, err := gmailwatch.DecodePushPayload(env)
 	if err != nil {
 		t.Fatalf("decode: %v", err)
 	}
@@ -289,7 +250,7 @@ func TestDecodeGmailPushPayload_InvalidHistoryID(t *testing.T) {
 
 	env := &pubsubPushEnvelope{}
 	env.Message.Data = base64.StdEncoding.EncodeToString(payload)
-	if _, err := decodeGmailPushPayload(env); err == nil {
+	if _, err := gmailwatch.DecodePushPayload(env); err == nil {
 		t.Fatalf("expected error")
 	}
 }

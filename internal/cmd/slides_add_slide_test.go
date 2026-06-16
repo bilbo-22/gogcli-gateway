@@ -1,6 +1,7 @@
 package cmd
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"io"
@@ -10,13 +11,11 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"google.golang.org/api/drive/v3"
 	"google.golang.org/api/option"
 	"google.golang.org/api/slides/v1"
-
-	"github.com/steipete/gogcli/internal/outfmt"
-	"github.com/steipete/gogcli/internal/ui"
 )
 
 // slidesPresGetResponse returns a minimal presentation JSON with one existing slide.
@@ -78,13 +77,6 @@ func newTestImage(t *testing.T, name string) string {
 }
 
 func TestSlidesAddSlide_NoNotes(t *testing.T) {
-	origSlides := newSlidesService
-	origDrive := newDriveService
-	t.Cleanup(func() {
-		newSlidesService = origSlides
-		newDriveService = origDrive
-	})
-
 	var batchUpdateCount int
 
 	slidesSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -134,7 +126,6 @@ func TestSlidesAddSlide_NoNotes(t *testing.T) {
 	if err != nil {
 		t.Fatalf("slides.NewService: %v", err)
 	}
-	newSlidesService = func(context.Context, string) (*slides.Service, error) { return slidesSvc, nil }
 
 	driveSvc, err := drive.NewService(context.Background(),
 		option.WithoutAuthentication(),
@@ -144,32 +135,25 @@ func TestSlidesAddSlide_NoNotes(t *testing.T) {
 	if err != nil {
 		t.Fatalf("drive.NewService: %v", err)
 	}
-	newDriveService = func(context.Context, string) (*drive.Service, error) { return driveSvc, nil }
 
 	imgPath := newTestImage(t, "test.png")
 	flags := &RootFlags{Account: "a@b.com"}
 
-	out := captureStdout(t, func() {
-		u, uiErr := ui.New(ui.Options{Stdout: os.Stdout, Stderr: io.Discard, Color: "never"})
-		if uiErr != nil {
-			t.Fatalf("ui.New: %v", uiErr)
-		}
-		ctx := ui.WithUI(context.Background(), u)
-
-		cmd := &SlidesAddSlideCmd{
-			PresentationID: "pres1",
-			Image:          imgPath,
-		}
-		if err := cmd.Run(ctx, flags); err != nil {
-			t.Fatalf("Run: %v", err)
-		}
-	})
-
-	if !strings.Contains(out, "slide\t2") {
-		t.Errorf("expected slide number 2, got: %q", out)
+	var stdout, stderr bytes.Buffer
+	ctx := withSlidesAndDriveTestServices(newCmdRuntimeOutputContext(t, &stdout, &stderr), slidesSvc, driveSvc)
+	cmd := &SlidesAddSlideCmd{
+		PresentationID: "pres1",
+		Image:          imgPath,
 	}
-	if !strings.Contains(out, "link\thttps://docs.google.com/presentation/d/pres1/edit") {
-		t.Errorf("expected presentation link, got: %q", out)
+	if err := cmd.Run(ctx, flags); err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+
+	if !strings.Contains(stdout.String(), "slide\t2") {
+		t.Errorf("expected slide number 2, got: %q", stdout.String())
+	}
+	if !strings.Contains(stdout.String(), "link\thttps://docs.google.com/presentation/d/pres1/edit") {
+		t.Errorf("expected presentation link, got: %q", stdout.String())
 	}
 	if batchUpdateCount != 1 {
 		t.Errorf("expected 1 batchUpdate (no notes), got %d", batchUpdateCount)
@@ -180,13 +164,6 @@ func TestSlidesAddSlide_NoNotes(t *testing.T) {
 }
 
 func TestSlidesAddSlide_WithNotes(t *testing.T) {
-	origSlides := newSlidesService
-	origDrive := newDriveService
-	t.Cleanup(func() {
-		newSlidesService = origSlides
-		newDriveService = origDrive
-	})
-
 	var batchUpdateCount int
 	var lastSlideID string
 
@@ -248,7 +225,6 @@ func TestSlidesAddSlide_WithNotes(t *testing.T) {
 	if err != nil {
 		t.Fatalf("slides.NewService: %v", err)
 	}
-	newSlidesService = func(context.Context, string) (*slides.Service, error) { return slidesSvc, nil }
 
 	driveSvc, err := drive.NewService(context.Background(),
 		option.WithoutAuthentication(),
@@ -258,30 +234,23 @@ func TestSlidesAddSlide_WithNotes(t *testing.T) {
 	if err != nil {
 		t.Fatalf("drive.NewService: %v", err)
 	}
-	newDriveService = func(context.Context, string) (*drive.Service, error) { return driveSvc, nil }
 
 	imgPath := newTestImage(t, "slide.jpg")
 	flags := &RootFlags{Account: "a@b.com"}
 
-	out := captureStdout(t, func() {
-		u, uiErr := ui.New(ui.Options{Stdout: os.Stdout, Stderr: io.Discard, Color: "never"})
-		if uiErr != nil {
-			t.Fatalf("ui.New: %v", uiErr)
-		}
-		ctx := ui.WithUI(context.Background(), u)
+	var stdout, stderr bytes.Buffer
+	ctx := withSlidesAndDriveTestServices(newCmdRuntimeOutputContext(t, &stdout, &stderr), slidesSvc, driveSvc)
+	cmd := &SlidesAddSlideCmd{
+		PresentationID: "pres1",
+		Image:          imgPath,
+		Notes:          "Hello speaker notes",
+	}
+	if err := cmd.Run(ctx, flags); err != nil {
+		t.Fatalf("Run: %v", err)
+	}
 
-		cmd := &SlidesAddSlideCmd{
-			PresentationID: "pres1",
-			Image:          imgPath,
-			Notes:          "Hello speaker notes",
-		}
-		if err := cmd.Run(ctx, flags); err != nil {
-			t.Fatalf("Run: %v", err)
-		}
-	})
-
-	if !strings.Contains(out, "slide\t2") {
-		t.Errorf("expected slide number 2, got: %q", out)
+	if !strings.Contains(stdout.String(), "slide\t2") {
+		t.Errorf("expected slide number 2, got: %q", stdout.String())
 	}
 	// With notes: 1 for create slide+image, 1 for insert text
 	if batchUpdateCount != 2 {
@@ -289,14 +258,103 @@ func TestSlidesAddSlide_WithNotes(t *testing.T) {
 	}
 }
 
-func TestSlidesAddSlide_NotesFile(t *testing.T) {
-	origSlides := newSlidesService
-	origDrive := newDriveService
+func TestSlidesAddSlide_RetriesImageFetchAndUsesDownloadURL(t *testing.T) {
+	origRetryDelays := docsImageInsertRetryDelays
 	t.Cleanup(func() {
-		newSlidesService = origSlides
-		newDriveService = origDrive
+		docsImageInsertRetryDelays = origRetryDelays
 	})
+	docsImageInsertRetryDelays = []time.Duration{0}
 
+	var batchUpdateCount int
+	var createImageURL string
+
+	slidesSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+
+		switch {
+		case strings.HasSuffix(r.URL.Path, ":batchUpdate") && r.Method == http.MethodPost:
+			batchUpdateCount++
+			var req slides.BatchUpdatePresentationRequest
+			if err := json.NewDecoder(r.Body).Decode(&req); err == nil {
+				for _, rr := range req.Requests {
+					if rr.CreateImage != nil {
+						createImageURL = rr.CreateImage.Url
+					}
+				}
+			}
+			if batchUpdateCount == 1 {
+				w.WriteHeader(http.StatusBadRequest)
+				_ = json.NewEncoder(w).Encode(map[string]any{
+					"error": map[string]any{
+						"code":    http.StatusBadRequest,
+						"message": "Invalid requests[1].createImage: There was a problem retrieving the image.",
+					},
+				})
+				return
+			}
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"presentationId": "pres1",
+				"replies":        []any{},
+			})
+		case strings.Contains(r.URL.Path, "/presentations/pres1") && r.Method == http.MethodGet:
+			_ = json.NewEncoder(w).Encode(slidesPresGetResponse("", false))
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer slidesSrv.Close()
+
+	driveSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+
+		switch {
+		case strings.Contains(r.URL.Path, "/upload/") && r.Method == http.MethodPost:
+			_ = json.NewEncoder(w).Encode(map[string]any{"id": "img_retry"})
+		case strings.Contains(r.URL.Path, "/files/img_retry/permissions") && r.Method == http.MethodPost:
+			_ = json.NewEncoder(w).Encode(map[string]any{"id": "perm1"})
+		case strings.Contains(r.URL.Path, "/files/img_retry") && r.Method == http.MethodDelete:
+			w.WriteHeader(http.StatusNoContent)
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer driveSrv.Close()
+
+	slidesSvc, err := slides.NewService(context.Background(),
+		option.WithoutAuthentication(),
+		option.WithHTTPClient(slidesSrv.Client()),
+		option.WithEndpoint(slidesSrv.URL+"/"),
+	)
+	if err != nil {
+		t.Fatalf("slides.NewService: %v", err)
+	}
+
+	driveSvc, err := drive.NewService(context.Background(),
+		option.WithoutAuthentication(),
+		option.WithHTTPClient(driveSrv.Client()),
+		option.WithEndpoint(driveSrv.URL+"/"),
+	)
+	if err != nil {
+		t.Fatalf("drive.NewService: %v", err)
+	}
+	ctx := withSlidesAndDriveTestServices(newCmdRuntimeOutputContext(t, io.Discard, io.Discard), slidesSvc, driveSvc)
+
+	cmd := &SlidesAddSlideCmd{
+		PresentationID: "pres1",
+		Image:          newTestImage(t, "test.png"),
+	}
+	if err := cmd.Run(ctx, &RootFlags{Account: "a@b.com"}); err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if batchUpdateCount != 2 {
+		t.Fatalf("expected retry after image retrieval failure, got %d batchUpdates", batchUpdateCount)
+	}
+	if createImageURL != driveImageDownloadURL("img_retry") {
+		t.Fatalf("CreateImage URL = %q, want %q", createImageURL, driveImageDownloadURL("img_retry"))
+	}
+}
+
+func TestSlidesAddSlide_NotesFile(t *testing.T) {
 	var insertedText string
 	var lastSlideID string
 	var batchCount int
@@ -358,7 +416,6 @@ func TestSlidesAddSlide_NotesFile(t *testing.T) {
 	if err != nil {
 		t.Fatalf("slides.NewService: %v", err)
 	}
-	newSlidesService = func(context.Context, string) (*slides.Service, error) { return slidesSvc, nil }
 
 	driveSvc, err := drive.NewService(context.Background(),
 		option.WithoutAuthentication(),
@@ -368,7 +425,6 @@ func TestSlidesAddSlide_NotesFile(t *testing.T) {
 	if err != nil {
 		t.Fatalf("drive.NewService: %v", err)
 	}
-	newDriveService = func(context.Context, string) (*drive.Service, error) { return driveSvc, nil }
 
 	imgPath := newTestImage(t, "slide.png")
 
@@ -380,23 +436,16 @@ func TestSlidesAddSlide_NotesFile(t *testing.T) {
 	}
 
 	flags := &RootFlags{Account: "a@b.com"}
-	u, uiErr := ui.New(ui.Options{Stdout: io.Discard, Stderr: io.Discard, Color: "never"})
-	if uiErr != nil {
-		t.Fatalf("ui.New: %v", uiErr)
+	ctx := withSlidesAndDriveTestServices(newCmdRuntimeOutputContext(t, io.Discard, io.Discard), slidesSvc, driveSvc)
+	cmd := &SlidesAddSlideCmd{
+		PresentationID: "pres1",
+		Image:          imgPath,
+		NotesFile:      notesPath,
+		Notes:          "this should be ignored",
 	}
-	ctx := ui.WithUI(context.Background(), u)
-
-	_ = captureStdout(t, func() {
-		cmd := &SlidesAddSlideCmd{
-			PresentationID: "pres1",
-			Image:          imgPath,
-			NotesFile:      notesPath,
-			Notes:          "this should be ignored",
-		}
-		if err := cmd.Run(ctx, flags); err != nil {
-			t.Fatalf("Run: %v", err)
-		}
-	})
+	if err := cmd.Run(ctx, flags); err != nil {
+		t.Fatalf("Run: %v", err)
+	}
 
 	// --notes-file takes precedence over --notes
 	if insertedText != notesContent {
@@ -405,13 +454,6 @@ func TestSlidesAddSlide_NotesFile(t *testing.T) {
 }
 
 func TestSlidesAddSlide_JSON(t *testing.T) {
-	origSlides := newSlidesService
-	origDrive := newDriveService
-	t.Cleanup(func() {
-		newSlidesService = origSlides
-		newDriveService = origDrive
-	})
-
 	slidesSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 
@@ -456,7 +498,6 @@ func TestSlidesAddSlide_JSON(t *testing.T) {
 	if err != nil {
 		t.Fatalf("slides.NewService: %v", err)
 	}
-	newSlidesService = func(context.Context, string) (*slides.Service, error) { return slidesSvc, nil }
 
 	driveSvc, err := drive.NewService(context.Background(),
 		option.WithoutAuthentication(),
@@ -466,31 +507,23 @@ func TestSlidesAddSlide_JSON(t *testing.T) {
 	if err != nil {
 		t.Fatalf("drive.NewService: %v", err)
 	}
-	newDriveService = func(context.Context, string) (*drive.Service, error) { return driveSvc, nil }
 
 	imgPath := newTestImage(t, "test.gif")
 	flags := &RootFlags{Account: "a@b.com"}
 
-	u, uiErr := ui.New(ui.Options{Stdout: io.Discard, Stderr: io.Discard, Color: "never"})
-	if uiErr != nil {
-		t.Fatalf("ui.New: %v", uiErr)
+	var stdout, stderr bytes.Buffer
+	ctx := withSlidesAndDriveTestServices(newCmdRuntimeJSONOutputContext(t, &stdout, &stderr), slidesSvc, driveSvc)
+	cmd := &SlidesAddSlideCmd{
+		PresentationID: "pres1",
+		Image:          imgPath,
 	}
-	ctx := ui.WithUI(context.Background(), u)
-	ctx = outfmt.WithMode(ctx, outfmt.Mode{JSON: true})
-
-	out := captureStdout(t, func() {
-		cmd := &SlidesAddSlideCmd{
-			PresentationID: "pres1",
-			Image:          imgPath,
-		}
-		if err := cmd.Run(ctx, flags); err != nil {
-			t.Fatalf("Run: %v", err)
-		}
-	})
+	if err := cmd.Run(ctx, flags); err != nil {
+		t.Fatalf("Run: %v", err)
+	}
 
 	var result map[string]any
-	if err := json.Unmarshal([]byte(out), &result); err != nil {
-		t.Fatalf("JSON parse: %v\noutput: %q", err, out)
+	if err := json.Unmarshal(stdout.Bytes(), &result); err != nil {
+		t.Fatalf("JSON parse: %v\noutput: %q", err, stdout.String())
 	}
 	if result["slideNumber"] != float64(2) {
 		t.Errorf("expected slideNumber=2, got %v", result["slideNumber"])
@@ -504,13 +537,6 @@ func TestSlidesAddSlide_JSON(t *testing.T) {
 }
 
 func TestSlidesAddSlide_Before(t *testing.T) {
-	origSlides := newSlidesService
-	origDrive := newDriveService
-	t.Cleanup(func() {
-		newSlidesService = origSlides
-		newDriveService = origDrive
-	})
-
 	var capturedCreateSlide *slides.CreateSlideRequest
 
 	// Presentation has 3 slides; we insert before the second one (index 1).
@@ -579,7 +605,6 @@ func TestSlidesAddSlide_Before(t *testing.T) {
 	if err != nil {
 		t.Fatalf("slides.NewService: %v", err)
 	}
-	newSlidesService = func(context.Context, string) (*slides.Service, error) { return slidesSvc, nil }
 
 	driveSvc, err := drive.NewService(context.Background(),
 		option.WithoutAuthentication(),
@@ -589,27 +614,20 @@ func TestSlidesAddSlide_Before(t *testing.T) {
 	if err != nil {
 		t.Fatalf("drive.NewService: %v", err)
 	}
-	newDriveService = func(context.Context, string) (*drive.Service, error) { return driveSvc, nil }
 
 	imgPath := newTestImage(t, "test.png")
 	flags := &RootFlags{Account: "a@b.com"}
 
-	out := captureStdout(t, func() {
-		u, uiErr := ui.New(ui.Options{Stdout: os.Stdout, Stderr: io.Discard, Color: "never"})
-		if uiErr != nil {
-			t.Fatalf("ui.New: %v", uiErr)
-		}
-		ctx := ui.WithUI(context.Background(), u)
-
-		cmd := &SlidesAddSlideCmd{
-			PresentationID: "pres1",
-			Image:          imgPath,
-			Before:         "slide_b",
-		}
-		if err := cmd.Run(ctx, flags); err != nil {
-			t.Fatalf("Run: %v", err)
-		}
-	})
+	var stdout, stderr bytes.Buffer
+	ctx := withSlidesAndDriveTestServices(newCmdRuntimeOutputContext(t, &stdout, &stderr), slidesSvc, driveSvc)
+	cmd := &SlidesAddSlideCmd{
+		PresentationID: "pres1",
+		Image:          imgPath,
+		Before:         "slide_b",
+	}
+	if err := cmd.Run(ctx, flags); err != nil {
+		t.Fatalf("Run: %v", err)
+	}
 
 	if capturedCreateSlide == nil {
 		t.Fatal("expected CreateSlide request to be captured")
@@ -618,19 +636,12 @@ func TestSlidesAddSlide_Before(t *testing.T) {
 		t.Errorf("expected InsertionIndex=1, got %d", capturedCreateSlide.InsertionIndex)
 	}
 	// Slide inserted before index 1 → new slide is slide number 2
-	if !strings.Contains(out, "slide\t2") {
-		t.Errorf("expected slide number 2, got: %q", out)
+	if !strings.Contains(stdout.String(), "slide\t2") {
+		t.Errorf("expected slide number 2, got: %q", stdout.String())
 	}
 }
 
 func TestSlidesAddSlide_BeforeNotFound(t *testing.T) {
-	origSlides := newSlidesService
-	origDrive := newDriveService
-	t.Cleanup(func() {
-		newSlidesService = origSlides
-		newDriveService = origDrive
-	})
-
 	slidesSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 
@@ -670,7 +681,6 @@ func TestSlidesAddSlide_BeforeNotFound(t *testing.T) {
 	if err != nil {
 		t.Fatalf("slides.NewService: %v", err)
 	}
-	newSlidesService = func(context.Context, string) (*slides.Service, error) { return slidesSvc, nil }
 
 	driveSvc, err := drive.NewService(context.Background(),
 		option.WithoutAuthentication(),
@@ -680,16 +690,11 @@ func TestSlidesAddSlide_BeforeNotFound(t *testing.T) {
 	if err != nil {
 		t.Fatalf("drive.NewService: %v", err)
 	}
-	newDriveService = func(context.Context, string) (*drive.Service, error) { return driveSvc, nil }
 
 	imgPath := newTestImage(t, "test.png")
 	flags := &RootFlags{Account: "a@b.com"}
 
-	u, uiErr := ui.New(ui.Options{Stdout: io.Discard, Stderr: io.Discard, Color: "never"})
-	if uiErr != nil {
-		t.Fatalf("ui.New: %v", uiErr)
-	}
-	ctx := ui.WithUI(context.Background(), u)
+	ctx := withSlidesAndDriveTestServices(newCmdRuntimeOutputContext(t, io.Discard, io.Discard), slidesSvc, driveSvc)
 
 	cmd := &SlidesAddSlideCmd{
 		PresentationID: "pres1",
@@ -703,19 +708,12 @@ func TestSlidesAddSlide_BeforeNotFound(t *testing.T) {
 }
 
 func TestSlidesAddSlide_UnsupportedFormat(t *testing.T) {
-	origSlides := newSlidesService
-	origDrive := newDriveService
-	t.Cleanup(func() {
-		newSlidesService = origSlides
-		newDriveService = origDrive
-	})
-
 	// Services should not be called for a format error
-	newSlidesService = func(context.Context, string) (*slides.Service, error) {
+	slidesFactory := func(context.Context, string) (*slides.Service, error) {
 		t.Fatal("slides service should not be created")
 		return nil, context.Canceled
 	}
-	newDriveService = func(context.Context, string) (*drive.Service, error) {
+	driveFactory := func(context.Context, string) (*drive.Service, error) {
 		t.Fatal("drive service should not be created")
 		return nil, context.Canceled
 	}
@@ -723,11 +721,10 @@ func TestSlidesAddSlide_UnsupportedFormat(t *testing.T) {
 	imgPath := newTestImage(t, "test.bmp")
 	flags := &RootFlags{Account: "a@b.com"}
 
-	u, uiErr := ui.New(ui.Options{Stdout: io.Discard, Stderr: io.Discard, Color: "never"})
-	if uiErr != nil {
-		t.Fatalf("ui.New: %v", uiErr)
-	}
-	ctx := ui.WithUI(context.Background(), u)
+	ctx := withSlidesTestServiceFactory(
+		withDriveTestServiceFactory(newCmdRuntimeOutputContext(t, io.Discard, io.Discard), driveFactory),
+		slidesFactory,
+	)
 
 	cmd := &SlidesAddSlideCmd{
 		PresentationID: "pres1",
@@ -736,5 +733,8 @@ func TestSlidesAddSlide_UnsupportedFormat(t *testing.T) {
 	err := cmd.Run(ctx, flags)
 	if err == nil || !strings.Contains(err.Error(), "unsupported image format") {
 		t.Fatalf("expected unsupported format error, got: %v", err)
+	}
+	if got := ExitCode(err); got != 2 {
+		t.Fatalf("expected usage exit code 2, got %d (err=%v)", got, err)
 	}
 }

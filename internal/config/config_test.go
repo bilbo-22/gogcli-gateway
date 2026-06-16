@@ -12,10 +12,7 @@ func TestConfigPath(t *testing.T) {
 	t.Setenv("HOME", home)
 	t.Setenv("XDG_CONFIG_HOME", filepath.Join(home, "xdg-config"))
 
-	path, err := ConfigPath()
-	if err != nil {
-		t.Fatalf("ConfigPath: %v", err)
-	}
+	path := NewConfigStore(testSystemLayout(t, PathKindConfig)).Path()
 
 	if filepath.Base(path) != "config.json" {
 		t.Fatalf("unexpected config file: %q", filepath.Base(path))
@@ -27,13 +24,13 @@ func TestConfigPath(t *testing.T) {
 }
 
 func TestReadConfig_Missing(t *testing.T) {
-	home := t.TempDir()
-	t.Setenv("HOME", home)
-	t.Setenv("XDG_CONFIG_HOME", filepath.Join(home, "xdg-config"))
+	t.Parallel()
 
-	cfg, err := ReadConfig()
+	store := NewConfigStore(Layout{ConfigDir: t.TempDir()})
+
+	cfg, err := store.Read()
 	if err != nil {
-		t.Fatalf("ReadConfig: %v", err)
+		t.Fatalf("Read: %v", err)
 	}
 
 	if cfg.KeyringBackend != "" {
@@ -42,33 +39,50 @@ func TestReadConfig_Missing(t *testing.T) {
 }
 
 func TestReadConfig_JSON5(t *testing.T) {
-	home := t.TempDir()
-	t.Setenv("HOME", home)
-	t.Setenv("XDG_CONFIG_HOME", filepath.Join(home, "xdg-config"))
+	t.Parallel()
 
-	path, err := ConfigPath()
-	if err != nil {
-		t.Fatalf("ConfigPath: %v", err)
-	}
-
-	if err = os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
-		t.Fatalf("mkdir: %v", err)
-	}
+	store := NewConfigStore(Layout{ConfigDir: t.TempDir()})
+	path := store.Path()
 	data := `{
   // allow comments + trailing commas
   keyring_backend: "file",
 }`
 
-	if err = os.WriteFile(path, []byte(data), 0o600); err != nil {
+	if err := os.WriteFile(path, []byte(data), 0o600); err != nil {
 		t.Fatalf("write config: %v", err)
 	}
 
-	cfg, err := ReadConfig()
+	cfg, err := store.Read()
 	if err != nil {
-		t.Fatalf("ReadConfig: %v", err)
+		t.Fatalf("Read: %v", err)
 	}
 
 	if got := strings.TrimSpace(cfg.KeyringBackend); got != "file" {
 		t.Fatalf("expected keyring_backend=file, got %q", got)
+	}
+}
+
+func TestConfigStoreWriteAndUpdate(t *testing.T) {
+	t.Parallel()
+
+	store := NewConfigStore(Layout{ConfigDir: t.TempDir()})
+	if err := store.Write(File{KeyringBackend: "file"}); err != nil {
+		t.Fatalf("Write: %v", err)
+	}
+
+	if err := store.Update(func(cfg *File) error {
+		cfg.DefaultTimezone = "UTC"
+		return nil
+	}); err != nil {
+		t.Fatalf("Update: %v", err)
+	}
+
+	cfg, err := store.Read()
+	if err != nil {
+		t.Fatalf("Read: %v", err)
+	}
+
+	if cfg.KeyringBackend != "file" || cfg.DefaultTimezone != "UTC" {
+		t.Fatalf("config = %#v", cfg)
 	}
 }

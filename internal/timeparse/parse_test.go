@@ -58,6 +58,7 @@ func TestParseDateTimeOrDate(t *testing.T) {
 		{name: "rfc3339", value: "2026-02-13T10:20:30Z", wantHasTime: true, wantHour: 10, wantMin: 20, wantOffset: 0},
 		{name: "rfc3339 nano", value: "2026-02-13T10:20:30.123456789Z", wantHasTime: true, wantHour: 10, wantMin: 20, wantOffset: 0},
 		{name: "iso tz no colon", value: "2026-02-13T10:20:30-0800", wantHasTime: true, wantHour: 10, wantMin: 20, wantOffset: -8 * 3600},
+		{name: "iso minutes tz no colon", value: "2026-02-13T10:20-0800", wantHasTime: true, wantHour: 10, wantMin: 20, wantOffset: -8 * 3600},
 		{name: "date only", value: "2026-02-13", wantHasTime: false, wantHour: 0, wantMin: 0, wantOffset: -8 * 3600},
 		{name: "local datetime seconds", value: "2026-02-13T10:20:30", wantHasTime: true, wantHour: 10, wantMin: 20, wantOffset: -8 * 3600},
 		{name: "local datetime minutes", value: "2026-02-13 10:20", wantHasTime: true, wantHour: 10, wantMin: 20, wantOffset: -8 * 3600},
@@ -91,6 +92,22 @@ func TestParseDateTimeOrDate(t *testing.T) {
 	}
 }
 
+func TestParseRangeExprUsesLocationForRelativeDate(t *testing.T) {
+	t.Parallel()
+
+	loc := time.FixedZone("Pacific", -8*3600)
+	now := time.Date(2026, 2, 14, 4, 30, 0, 0, time.UTC)
+
+	got, err := ParseRangeExpr("today", now, loc)
+	if err != nil {
+		t.Fatalf("ParseRangeExpr: %v", err)
+	}
+
+	if got.Format("2006-01-02") != "2026-02-13" {
+		t.Fatalf("got %s, want local date 2026-02-13", got.Format("2006-01-02"))
+	}
+}
+
 //nolint:wsl_v5
 func TestParseRangeExpr(t *testing.T) {
 	t.Parallel()
@@ -110,6 +127,9 @@ func TestParseRangeExpr(t *testing.T) {
 		{name: "today", value: "today", wantDay: 13, wantMonth: time.February, wantHour: 0, wantWeek: time.Friday},
 		{name: "tomorrow", value: "tomorrow", wantDay: 14, wantMonth: time.February, wantHour: 0, wantWeek: time.Saturday},
 		{name: "weekday", value: "monday", wantDay: 16, wantMonth: time.February, wantHour: 0, wantWeek: time.Monday},
+		{name: "tuesday alias", value: "tues", wantDay: 17, wantMonth: time.February, wantHour: 0, wantWeek: time.Tuesday},
+		{name: "thursday alias short", value: "thur", wantDay: 19, wantMonth: time.February, wantHour: 0, wantWeek: time.Thursday},
+		{name: "thursday alias common", value: "thurs", wantDay: 19, wantMonth: time.February, wantHour: 0, wantWeek: time.Thursday},
 		{name: "next weekday", value: "next friday", wantDay: 20, wantMonth: time.February, wantHour: 0, wantWeek: time.Friday},
 		{name: "date", value: "2026-02-01", wantDay: 1, wantMonth: time.February, wantHour: 0, wantWeek: time.Sunday},
 		{name: "datetime", value: "2026-02-01T10:30:00", wantDay: 1, wantMonth: time.February, wantHour: 10, wantWeek: time.Sunday},
@@ -131,6 +151,31 @@ func TestParseRangeExpr(t *testing.T) {
 			}
 			if got.Day() != tc.wantDay || got.Month() != tc.wantMonth || got.Hour() != tc.wantHour || got.Weekday() != tc.wantWeek {
 				t.Fatalf("unexpected parsed range: %v", got)
+			}
+		})
+	}
+}
+
+func TestParseWeekdayName(t *testing.T) {
+	t.Parallel()
+
+	testCases := []struct {
+		value string
+		want  time.Weekday
+	}{
+		{value: "tue", want: time.Tuesday},
+		{value: "tues", want: time.Tuesday},
+		{value: "thurs", want: time.Thursday},
+		{value: " Thursday ", want: time.Thursday},
+	}
+
+	for _, tc := range testCases {
+		t.Run(tc.value, func(t *testing.T) {
+			t.Parallel()
+			got, ok := ParseWeekdayName(tc.value)
+
+			if !ok || got != tc.want {
+				t.Fatalf("ParseWeekdayName(%q) = %v ok=%v, want %v true", tc.value, got, ok, tc.want)
 			}
 		})
 	}

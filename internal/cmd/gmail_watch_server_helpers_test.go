@@ -15,14 +15,16 @@ import (
 	"google.golang.org/api/gmail/v1"
 	"google.golang.org/api/googleapi"
 	"google.golang.org/api/idtoken"
+
+	"github.com/steipete/gogcli/internal/gmailwatch"
 )
 
 func TestParsePubSubPush(t *testing.T) {
 	payload := pubsubPushEnvelope{}
 	payload.Message.Data = "Zm9v"
 	body, _ := json.Marshal(payload)
-	req := httptest.NewRequest(http.MethodPost, "/", bytes.NewReader(body))
-	env, err := parsePubSubPush(req)
+	req := httptest.NewRequestWithContext(context.Background(), http.MethodPost, "/", bytes.NewReader(body))
+	env, err := gmailwatch.ParsePush(req, defaultPushBodyLimitBytes)
 	if err != nil {
 		t.Fatalf("parsePubSubPush: %v", err)
 	}
@@ -30,14 +32,14 @@ func TestParsePubSubPush(t *testing.T) {
 		t.Fatalf("unexpected data")
 	}
 
-	req = httptest.NewRequest(http.MethodPost, "/", bytes.NewReader([]byte(`{"message":{}}`)))
-	if _, err := parsePubSubPush(req); err == nil {
+	req = httptest.NewRequestWithContext(context.Background(), http.MethodPost, "/", bytes.NewReader([]byte(`{"message":{}}`)))
+	if _, err := gmailwatch.ParsePush(req, defaultPushBodyLimitBytes); err == nil {
 		t.Fatalf("expected missing data error")
 	}
 
 	oversize := bytes.Repeat([]byte("a"), defaultPushBodyLimitBytes+1)
-	req = httptest.NewRequest(http.MethodPost, "/", bytes.NewReader(oversize))
-	if _, err := parsePubSubPush(req); err == nil {
+	req = httptest.NewRequestWithContext(context.Background(), http.MethodPost, "/", bytes.NewReader(oversize))
+	if _, err := gmailwatch.ParsePush(req, defaultPushBodyLimitBytes); err == nil {
 		t.Fatalf("expected size error")
 	}
 }
@@ -272,7 +274,7 @@ func TestDecodeGmailPushPayload(t *testing.T) {
 	env := &pubsubPushEnvelope{}
 	env.Message.Data = base64.StdEncoding.EncodeToString([]byte(payload))
 
-	got, err := decodeGmailPushPayload(env)
+	got, err := gmailwatch.DecodePushPayload(env)
 	if err != nil {
 		t.Fatalf("decode: %v", err)
 	}
@@ -281,30 +283,30 @@ func TestDecodeGmailPushPayload(t *testing.T) {
 	}
 
 	env.Message.Data = base64.RawStdEncoding.EncodeToString([]byte(payload))
-	if _, err := decodeGmailPushPayload(env); err != nil {
+	if _, err := gmailwatch.DecodePushPayload(env); err != nil {
 		t.Fatalf("decode raw: %v", err)
 	}
 }
 
 func TestSharedTokenAndBearerEdgeCases(t *testing.T) {
-	r := httptest.NewRequest(http.MethodPost, "/hook?token=query", nil)
-	if sharedTokenMatches(r, "") {
+	r := httptest.NewRequestWithContext(context.Background(), http.MethodPost, "/hook?token=query", nil)
+	if gmailwatch.SharedTokenMatches(r, "") {
 		t.Fatalf("expected false for empty expected token")
 	}
-	if sharedTokenMatches(r, "nope") {
+	if gmailwatch.SharedTokenMatches(r, "nope") {
 		t.Fatalf("expected false for mismatch")
 	}
-	if !sharedTokenMatches(r, "query") {
+	if !gmailwatch.SharedTokenMatches(r, "query") {
 		t.Fatalf("expected query token match")
 	}
 
-	if got := bearerToken(&http.Request{}); got != "" {
+	if got := gmailwatch.BearerToken(&http.Request{}); got != "" {
 		t.Fatalf("expected empty bearer")
 	}
-	if got := bearerToken(&http.Request{Header: http.Header{"Authorization": []string{"token abc"}}}); got != "" {
+	if got := gmailwatch.BearerToken(&http.Request{Header: http.Header{"Authorization": []string{"token abc"}}}); got != "" {
 		t.Fatalf("expected empty bearer for non-bearer scheme")
 	}
-	if got := bearerToken(&http.Request{Header: http.Header{"Authorization": []string{"Bearer"}}}); got != "" {
+	if got := gmailwatch.BearerToken(&http.Request{Header: http.Header{"Authorization": []string{"Bearer"}}}); got != "" {
 		t.Fatalf("expected empty bearer for missing token")
 	}
 }
@@ -361,7 +363,7 @@ func TestAuthorizeVariants(t *testing.T) {
 		cfg:   gmailWatchServeConfig{},
 		warnf: func(string, ...any) {},
 	}
-	req := httptest.NewRequest(http.MethodPost, "/hook", nil)
+	req := httptest.NewRequestWithContext(context.Background(), http.MethodPost, "/hook", nil)
 	if !s.authorize(req) {
 		t.Fatalf("expected authorize when no shared token")
 	}
@@ -370,7 +372,7 @@ func TestAuthorizeVariants(t *testing.T) {
 		cfg:   gmailWatchServeConfig{SharedToken: "tok"},
 		warnf: func(string, ...any) {},
 	}
-	req = httptest.NewRequest(http.MethodPost, "/hook?token=bad", nil)
+	req = httptest.NewRequestWithContext(context.Background(), http.MethodPost, "/hook?token=bad", nil)
 	if s.authorize(req) {
 		t.Fatalf("expected shared token mismatch")
 	}
@@ -379,7 +381,7 @@ func TestAuthorizeVariants(t *testing.T) {
 		cfg:   gmailWatchServeConfig{VerifyOIDC: true, SharedToken: "tok"},
 		warnf: func(string, ...any) {},
 	}
-	req = httptest.NewRequest(http.MethodPost, "/hook?token=tok", nil)
+	req = httptest.NewRequestWithContext(context.Background(), http.MethodPost, "/hook?token=tok", nil)
 	req.Header.Set("Authorization", "Bearer abc")
 	if !s.authorize(req) {
 		t.Fatalf("expected shared token fallback with oidc")
@@ -389,7 +391,7 @@ func TestAuthorizeVariants(t *testing.T) {
 		cfg:   gmailWatchServeConfig{VerifyOIDC: true},
 		warnf: func(string, ...any) {},
 	}
-	req = httptest.NewRequest(http.MethodPost, "/hook", nil)
+	req = httptest.NewRequestWithContext(context.Background(), http.MethodPost, "/hook", nil)
 	if s.authorize(req) {
 		t.Fatalf("expected oidc authorization failure without token")
 	}

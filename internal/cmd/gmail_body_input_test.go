@@ -1,6 +1,7 @@
 package cmd
 
 import (
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
@@ -14,7 +15,7 @@ func TestResolveBodyInput_File(t *testing.T) {
 		t.Fatalf("write file: %v", err)
 	}
 
-	got, err := resolveBodyInput("", path)
+	got, err := resolveBodyInput(newCmdRuntimeOutputContext(t, io.Discard, io.Discard), "", path)
 	if err != nil {
 		t.Fatalf("resolve: %v", err)
 	}
@@ -24,22 +25,8 @@ func TestResolveBodyInput_File(t *testing.T) {
 }
 
 func TestResolveBodyInput_Stdin(t *testing.T) {
-	r, w, err := os.Pipe()
-	if err != nil {
-		t.Fatalf("pipe: %v", err)
-	}
-	old := os.Stdin
-	t.Cleanup(func() { os.Stdin = old })
-	os.Stdin = r
-
-	if _, writeErr := w.Write([]byte("stdin body")); writeErr != nil {
-		t.Fatalf("write: %v", writeErr)
-	}
-	if closeErr := w.Close(); closeErr != nil {
-		t.Fatalf("close: %v", closeErr)
-	}
-
-	got, err := resolveBodyInput("", "-")
+	ctx := newCmdRuntimeIOContext(t, strings.NewReader("stdin body"), io.Discard, io.Discard)
+	got, err := resolveBodyInput(ctx, "", "-")
 	if err != nil {
 		t.Fatalf("resolve: %v", err)
 	}
@@ -49,11 +36,19 @@ func TestResolveBodyInput_Stdin(t *testing.T) {
 }
 
 func TestResolveBodyInput_Conflict(t *testing.T) {
-	_, err := resolveBodyInput("body", "/tmp/body.txt")
+	_, err := resolveBodyInput(newCmdRuntimeOutputContext(t, io.Discard, io.Discard), "body", "/tmp/body.txt")
 	if err == nil {
 		t.Fatalf("expected conflict error")
 	}
 	if !strings.Contains(err.Error(), "--body") {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+func TestResolveComposeBodyInputs_RejectsDoubleStdin(t *testing.T) {
+	ctx := newCmdRuntimeIOContext(t, strings.NewReader("body"), io.Discard, io.Discard)
+	_, _, err := resolveComposeBodyInputs(ctx, "", "-", "", "-")
+	if err == nil || !strings.Contains(err.Error(), "use stdin for only one") {
 		t.Fatalf("unexpected error: %v", err)
 	}
 }

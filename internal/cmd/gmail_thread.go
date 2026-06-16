@@ -1,51 +1,20 @@
 package cmd
 
 import (
-	"bytes"
 	"context"
-	"encoding/base64"
 	"errors"
 	"fmt"
-	"io"
-	"mime"
-	"mime/quotedprintable"
 	"net/url"
-	"os"
 	"path/filepath"
-	"regexp"
 	"strings"
 
-	"golang.org/x/net/html/charset"
-	"golang.org/x/text/encoding/ianaindex"
 	"google.golang.org/api/gmail/v1"
 
 	"github.com/steipete/gogcli/internal/config"
+	"github.com/steipete/gogcli/internal/gmailcontent"
 	"github.com/steipete/gogcli/internal/outfmt"
 	"github.com/steipete/gogcli/internal/ui"
 )
-
-// HTML stripping patterns for cleaner text output.
-var (
-	// Remove script blocks entirely (including content)
-	scriptPattern = regexp.MustCompile(`(?is)<script[^>]*>.*?</script>`)
-	// Remove style blocks entirely (including content)
-	stylePattern = regexp.MustCompile(`(?is)<style[^>]*>.*?</style>`)
-	// Remove all HTML tags
-	htmlTagPattern = regexp.MustCompile(`<[^>]*>`)
-	// Collapse multiple whitespace/newlines
-	whitespacePattern = regexp.MustCompile(`\s+`)
-)
-
-func stripHTMLTags(s string) string {
-	// First remove script and style blocks entirely
-	s = scriptPattern.ReplaceAllString(s, "")
-	s = stylePattern.ReplaceAllString(s, "")
-	// Then remove remaining HTML tags
-	s = htmlTagPattern.ReplaceAllString(s, " ")
-	// Collapse whitespace
-	s = whitespacePattern.ReplaceAllString(s, " ")
-	return strings.TrimSpace(s)
-}
 
 type GmailThreadCmd struct {
 	Get         GmailThreadGetCmd         `cmd:"" name:"get" aliases:"info,show" default:"withargs" help:"Get a thread with all messages (optionally download attachments)"`
@@ -54,10 +23,11 @@ type GmailThreadCmd struct {
 }
 
 type GmailThreadGetCmd struct {
-	ThreadID  string        `arg:"" name:"threadId" help:"Thread ID"`
-	Download  bool          `name:"download" help:"Download attachments"`
-	Full      bool          `name:"full" help:"Show full message bodies"`
-	OutputDir OutputDirFlag `embed:""`
+	ThreadID        string        `arg:"" name:"threadId" help:"Thread ID"`
+	Download        bool          `name:"download" help:"Download attachments"`
+	Full            bool          `name:"full" help:"Show full message bodies without truncation"`
+	SanitizeContent bool          `name:"sanitize-content" aliases:"sanitize,safe" help:"Emit agent-oriented sanitized content: strip HTML, remove HTTP(S) URLs, and omit raw Gmail payloads from JSON"`
+	OutputDir       OutputDirFlag `embed:""`
 }
 
 func (c *GmailThreadGetCmd) Run(ctx context.Context, flags *RootFlags) error {
@@ -72,7 +42,7 @@ func (c *GmailThreadGetCmd) Run(ctx context.Context, flags *RootFlags) error {
 		return usage("empty threadId")
 	}
 
-	svc, err := newGmailService(ctx, account)
+	svc, err := gmailService(ctx, account)
 	if err != nil {
 		return err
 	}
@@ -110,7 +80,13 @@ func (c *GmailThreadGetCmd) Run(ctx context.Context, flags *RootFlags) error {
 				downloadedFiles = append(downloadedFiles, attachmentDownloadSummaries(downloads)...)
 			}
 		}
-		return outfmt.WriteJSON(ctx, os.Stdout, map[string]any{
+		if c.SanitizeContent {
+			return outfmt.WriteJSON(ctx, stdoutWriter(ctx), map[string]any{
+				"thread":     sanitizedGmailThread(thread, true),
+				"downloaded": downloadedFiles,
+			})
+		}
+		return outfmt.WriteJSON(ctx, stdoutWriter(ctx), map[string]any{
 			"thread":     thread,
 			"downloaded": downloadedFiles,
 		})
@@ -121,32 +97,38 @@ func (c *GmailThreadGetCmd) Run(ctx context.Context, flags *RootFlags) error {
 	}
 
 	// Show message count upfront so users know how many messages to expect
-	u.Out().Printf("Thread contains %d message(s)", len(thread.Messages))
+	u.Out().Linef("Thread contains %d message(s)", len(thread.Messages))
 	u.Out().Println("")
 
 	for i, msg := range thread.Messages {
 		if msg == nil {
 			continue
 		}
-		u.Out().Printf("=== Message %d/%d: %s ===", i+1, len(thread.Messages), msg.Id)
-		u.Out().Printf("From: %s", headerValue(msg.Payload, "From"))
-		u.Out().Printf("To: %s", headerValue(msg.Payload, "To"))
-		u.Out().Printf("Subject: %s", headerValue(msg.Payload, "Subject"))
-		u.Out().Printf("Date: %s", headerValue(msg.Payload, "Date"))
+		u.Out().Linef("=== Message %d/%d: %s ===", i+1, len(thread.Messages), msg.Id)
+		header := func(name string) string {
+			value := headerValue(msg.Payload, name)
+			if c.SanitizeContent {
+				return sanitizeGmailText(value)
+			}
+			return value
+		}
+		u.Out().Linef("From: %s", header("From"))
+		u.Out().Linef("To: %s", header("To"))
+		u.Out().Linef("Subject: %s", header("Subject"))
+		u.Out().Linef("Date: %s", header("Date"))
 		u.Out().Println("")
 
-		body, isHTML := bestBodyForDisplay(msg.Payload)
+		body, isHTML := gmailcontent.BestBodyForDisplay(msg.Payload)
 		if body != "" {
 			cleanBody := body
-			if isHTML {
-				// Strip HTML tags for cleaner text output
-				cleanBody = stripHTMLTags(body)
+			if c.SanitizeContent {
+				cleanBody = sanitizeGmailBody(body, isHTML)
+			} else if isHTML {
+				cleanBody = gmailcontent.StripHTMLTags(body)
 			}
-			// Limit body preview to avoid overwhelming output
-			// Use runes to avoid breaking multi-byte UTF-8 characters
-			runes := []rune(cleanBody)
-			if len(runes) > 500 && !c.Full {
-				cleanBody = string(runes[:500]) + "... [truncated]"
+			// Keep unusually large bodies bounded without turning normal messages into previews.
+			if !c.Full {
+				cleanBody = truncateRunes(cleanBody, gmailDefaultTextBodyLimit)
 			}
 			u.Out().Println(cleanBody)
 			u.Out().Println("")
@@ -162,7 +144,7 @@ func (c *GmailThreadGetCmd) Run(ctx context.Context, flags *RootFlags) error {
 			}
 			for _, a := range downloads {
 				if a.Cached {
-					u.Out().Printf("Cached: %s", a.Path)
+					u.Out().Linef("Cached: %s", a.Path)
 				} else {
 					u.Out().Successf("Saved: %s", a.Path)
 				}
@@ -207,19 +189,15 @@ func (c *GmailThreadModifyCmd) Run(ctx context.Context, flags *RootFlags) error 
 		return err
 	}
 
-	svc, err := newGmailService(ctx, account)
+	svc, err := gmailService(ctx, account)
 	if err != nil {
 		return err
 	}
 
-	// Resolve label names to IDs
-	idMap, err := fetchLabelNameToID(svc)
+	addIDs, removeIDs, err := resolveModifyLabelIDs(svc, addLabels, removeLabels)
 	if err != nil {
 		return err
 	}
-
-	addIDs := resolveLabelIDs(addLabels, idMap)
-	removeIDs := resolveLabelIDs(removeLabels, idMap)
 
 	// Use Gmail's Threads.Modify API
 	_, err = svc.Users.Threads.Modify("me", threadID, &gmail.ModifyThreadRequest{
@@ -231,14 +209,14 @@ func (c *GmailThreadModifyCmd) Run(ctx context.Context, flags *RootFlags) error 
 	}
 
 	if outfmt.IsJSON(ctx) {
-		return outfmt.WriteJSON(ctx, os.Stdout, map[string]any{
+		return outfmt.WriteJSON(ctx, stdoutWriter(ctx), map[string]any{
 			"modified":      threadID,
 			"addedLabels":   addIDs,
 			"removedLabels": removeIDs,
 		})
 	}
 
-	u.Out().Printf("Modified thread %s", threadID)
+	u.Out().Linef("Modified thread %s", threadID)
 	return nil
 }
 
@@ -261,7 +239,7 @@ func (c *GmailThreadAttachmentsCmd) Run(ctx context.Context, flags *RootFlags) e
 		return usage("empty threadId")
 	}
 
-	svc, err := newGmailService(ctx, account)
+	svc, err := gmailService(ctx, account)
 	if err != nil {
 		return err
 	}
@@ -273,7 +251,7 @@ func (c *GmailThreadAttachmentsCmd) Run(ctx context.Context, flags *RootFlags) e
 
 	if thread == nil || len(thread.Messages) == 0 {
 		if outfmt.IsJSON(ctx) {
-			return outfmt.WriteJSON(ctx, os.Stdout, map[string]any{
+			return outfmt.WriteJSON(ctx, stdoutWriter(ctx), map[string]any{
 				"threadId":    threadID,
 				"attachments": []any{},
 			})
@@ -295,7 +273,7 @@ func (c *GmailThreadAttachmentsCmd) Run(ctx context.Context, flags *RootFlags) e
 		}
 	}
 
-	var allAttachments []attachmentDownloadOutput
+	allAttachments := make([]attachmentDownloadOutput, 0)
 	for _, msg := range thread.Messages {
 		if msg == nil {
 			continue
@@ -313,7 +291,7 @@ func (c *GmailThreadAttachmentsCmd) Run(ctx context.Context, flags *RootFlags) e
 	}
 
 	if outfmt.IsJSON(ctx) {
-		return outfmt.WriteJSON(ctx, os.Stdout, map[string]any{
+		return outfmt.WriteJSON(ctx, stdoutWriter(ctx), map[string]any{
 			"threadId":    threadID,
 			"attachments": allAttachments,
 		})
@@ -324,14 +302,14 @@ func (c *GmailThreadAttachmentsCmd) Run(ctx context.Context, flags *RootFlags) e
 		return nil
 	}
 
-	u.Out().Printf("Found %d attachment(s):", len(allAttachments))
+	u.Out().Linef("Found %d attachment(s):", len(allAttachments))
 	if c.Download {
 		for _, a := range allAttachments {
 			status := "Saved"
 			if a.Cached {
 				status = "Cached"
 			}
-			u.Out().Printf("  %s: %s (%s) - %s", status, a.Filename, a.SizeHuman, a.Path)
+			u.Out().Linef("  %s: %s (%s) - %s", status, a.Filename, a.SizeHuman, a.Path)
 		}
 		return nil
 	}
@@ -358,319 +336,14 @@ func (c *GmailURLCmd) Run(ctx context.Context, flags *RootFlags) error {
 				"url": fmt.Sprintf("https://mail.google.com/mail/?authuser=%s#all/%s", url.QueryEscape(account), id),
 			})
 		}
-		return outfmt.WriteJSON(ctx, os.Stdout, map[string]any{"urls": urls})
+		return outfmt.WriteJSON(ctx, stdoutWriter(ctx), map[string]any{"urls": urls})
 	}
 	for _, id := range c.ThreadIDs {
 		id = normalizeGmailThreadID(id)
 		threadURL := fmt.Sprintf("https://mail.google.com/mail/?authuser=%s#all/%s", url.QueryEscape(account), id)
-		u.Out().Printf("%s\t%s", id, threadURL)
+		u.Out().Linef("%s\t%s", id, threadURL)
 	}
 	return nil
-}
-
-func bestBodyText(p *gmail.MessagePart) string {
-	if p == nil {
-		return ""
-	}
-	plain := findPartBody(p, "text/plain")
-	if plain != "" {
-		return plain
-	}
-	html := findPartBody(p, "text/html")
-	return html
-}
-
-func bestBodyForDisplay(p *gmail.MessagePart) (string, bool) {
-	if p == nil {
-		return "", false
-	}
-	plain := findPartBody(p, "text/plain")
-	if plain != "" {
-		if looksLikeHTML(plain) {
-			return plain, true
-		}
-		return plain, false
-	}
-	html := findPartBody(p, "text/html")
-	if html == "" {
-		return "", false
-	}
-	return html, true
-}
-
-func findPartBody(p *gmail.MessagePart, mimeType string) string {
-	if p == nil {
-		return ""
-	}
-	if mimeTypeMatches(p.MimeType, mimeType) && p.Body != nil && p.Body.Data != "" {
-		s, err := decodePartBody(p)
-		if err == nil {
-			return s
-		}
-	}
-	for _, part := range p.Parts {
-		if s := findPartBody(part, mimeType); s != "" {
-			return s
-		}
-	}
-	return ""
-}
-
-func mimeTypeMatches(partType string, want string) bool {
-	return normalizeMimeType(partType) == normalizeMimeType(want)
-}
-
-func normalizeMimeType(value string) string {
-	value = strings.TrimSpace(strings.ToLower(value))
-	if value == "" {
-		return ""
-	}
-	mediaType, _, err := mime.ParseMediaType(value)
-	if err == nil && mediaType != "" {
-		return strings.ToLower(mediaType)
-	}
-	if idx := strings.Index(value, ";"); idx != -1 {
-		return strings.TrimSpace(value[:idx])
-	}
-	return value
-}
-
-func looksLikeHTML(value string) bool {
-	trimmed := strings.TrimSpace(strings.ToLower(value))
-	if trimmed == "" {
-		return false
-	}
-	return strings.HasPrefix(trimmed, "<!doctype") ||
-		strings.HasPrefix(trimmed, "<html") ||
-		strings.HasPrefix(trimmed, "<head") ||
-		strings.HasPrefix(trimmed, "<body") ||
-		strings.HasPrefix(trimmed, "<meta") ||
-		strings.Contains(trimmed, "<html")
-}
-
-func decodePartBody(p *gmail.MessagePart) (string, error) {
-	if p == nil || p.Body == nil || p.Body.Data == "" {
-		return "", nil
-	}
-	raw, err := decodeBase64URLBytes(p.Body.Data)
-	if err != nil {
-		return "", err
-	}
-
-	decoded := raw
-	if cte := strings.TrimSpace(headerValue(p, "Content-Transfer-Encoding")); cte != "" {
-		decoded = decodeTransferEncoding(decoded, cte)
-	}
-
-	if contentType := strings.TrimSpace(headerValue(p, "Content-Type")); contentType != "" {
-		decoded = decodeBodyCharset(decoded, contentType)
-	}
-
-	return string(decoded), nil
-}
-
-func decodeTransferEncoding(data []byte, encoding string) []byte {
-	switch strings.ToLower(strings.TrimSpace(encoding)) {
-	case "base64":
-		if !looksLikeBase64(data) {
-			return data
-		}
-		if decoded, err := decodeAnyBase64(data); err == nil {
-			return decoded
-		}
-	case "quoted-printable":
-		if !looksLikeQuotedPrintable(data) {
-			return data
-		}
-		if decoded, err := io.ReadAll(quotedprintable.NewReader(bytes.NewReader(data))); err == nil {
-			return decoded
-		}
-	}
-	return data
-}
-
-func decodeBodyCharset(data []byte, contentType string) []byte {
-	charsetLabel := charsetLabelFromContentType(contentType)
-	normalized := strings.ToLower(strings.ReplaceAll(strings.TrimSpace(charsetLabel), "_", "-"))
-	if charsetLabel == "" || normalized == "utf-8" || normalized == "utf8" {
-		return data
-	}
-	if decoded, ok := decodeWithCharsetLabel(data, charsetLabel); ok {
-		return decoded
-	}
-	return data
-}
-
-func charsetLabelFromContentType(contentType string) string {
-	_, params, err := mime.ParseMediaType(contentType)
-	if err == nil {
-		if label := strings.TrimSpace(params["charset"]); label != "" {
-			return label
-		}
-	}
-	lower := strings.ToLower(contentType)
-	idx := strings.Index(lower, "charset=")
-	if idx == -1 {
-		return ""
-	}
-	label := contentType[idx+len("charset="):]
-	label = strings.TrimLeft(label, " \t")
-	if cut := strings.IndexAny(label, "; \t"); cut != -1 {
-		label = label[:cut]
-	}
-	return strings.Trim(label, "\"'")
-}
-
-func decodeWithCharsetLabel(data []byte, charsetLabel string) ([]byte, bool) {
-	label := strings.TrimSpace(charsetLabel)
-	if label == "" {
-		return nil, false
-	}
-	if decoded, ok := decodeWithEncodingIndex(data, label); ok {
-		return decoded, true
-	}
-	if strings.Contains(label, "_") {
-		alt := strings.ReplaceAll(label, "_", "-")
-		if decoded, ok := decodeWithEncodingIndex(data, alt); ok {
-			return decoded, true
-		}
-	}
-	return nil, false
-}
-
-func decodeWithEncodingIndex(data []byte, charsetLabel string) ([]byte, bool) {
-	if enc, err := ianaindex.MIME.Encoding(charsetLabel); err == nil && enc != nil {
-		if decoded, err := enc.NewDecoder().Bytes(data); err == nil {
-			return decoded, true
-		}
-	}
-	reader, err := charset.NewReaderLabel(charsetLabel, bytes.NewReader(data))
-	if err != nil {
-		return nil, false
-	}
-	decoded, err := io.ReadAll(reader)
-	if err != nil {
-		return nil, false
-	}
-	return decoded, true
-}
-
-func looksLikeBase64(data []byte) bool {
-	trimmed := bytes.TrimSpace(data)
-	if len(trimmed) == 0 {
-		return false
-	}
-	for _, b := range trimmed {
-		switch {
-		case b >= 'A' && b <= 'Z':
-		case b >= 'a' && b <= 'z':
-		case b >= '0' && b <= '9':
-		case b == '+', b == '/', b == '=', b == '-', b == '_':
-		case b == '\n', b == '\r', b == '\t', b == ' ':
-		default:
-			return false
-		}
-	}
-	return true
-}
-
-// looksLikeQuotedPrintable checks if data appears to contain quoted-printable
-// encoded sequences. This prevents double-decoding when the Gmail API has
-// already decoded the content.
-//
-// Detection strategy is intentionally conservative to avoid URL corruption:
-// 1. Soft line breaks (=\r\n or =\n)
-// 2. Escaped equals (=3D / =3d)
-// 3. Chained hex escapes (=XX=YY...), common in UTF-8 quoted-printable text
-func looksLikeQuotedPrintable(data []byte) bool {
-	for i := 0; i < len(data)-2; i++ {
-		if data[i] != '=' {
-			continue
-		}
-		// Soft line break (="\r\n" or "\n") is a definitive QP marker.
-		if data[i+1] == '\r' || data[i+1] == '\n' {
-			return true
-		}
-		if !isHexDigit(data[i+1]) || !isHexDigit(data[i+2]) {
-			continue
-		}
-		// =3D (case-insensitive) encodes literal '=' and is a strong marker.
-		if isHexPair(data[i+1], data[i+2], '3', 'D') {
-			return true
-		}
-		// Chained escapes like =E2=82=AC are common in real QP bodies.
-		if i+3 < len(data) && data[i+3] == '=' {
-			return true
-		}
-	}
-	return false
-}
-
-func isHexDigit(b byte) bool {
-	return (b >= '0' && b <= '9') || (b >= 'A' && b <= 'F') || (b >= 'a' && b <= 'f')
-}
-
-func isHexPair(a, b, hi, lo byte) bool {
-	return equalFoldHexNibble(a, hi) && equalFoldHexNibble(b, lo)
-}
-
-func equalFoldHexNibble(a, b byte) bool {
-	if a == b {
-		return true
-	}
-	if b >= 'A' && b <= 'F' {
-		return a == b+('a'-'A')
-	}
-	return false
-}
-
-func decodeAnyBase64(data []byte) ([]byte, error) {
-	cleaned := stripBase64Whitespace(data)
-	str := string(cleaned)
-	if decoded, err := base64.StdEncoding.DecodeString(str); err == nil {
-		return decoded, nil
-	}
-	if decoded, err := base64.RawStdEncoding.DecodeString(str); err == nil {
-		return decoded, nil
-	}
-	if decoded, err := base64.URLEncoding.DecodeString(str); err == nil {
-		return decoded, nil
-	}
-	return base64.RawURLEncoding.DecodeString(str)
-}
-
-func stripBase64Whitespace(data []byte) []byte {
-	out := make([]byte, 0, len(data))
-	for _, b := range data {
-		switch b {
-		case '\n', '\r', '\t', ' ':
-			continue
-		default:
-			out = append(out, b)
-		}
-	}
-	return out
-}
-
-func decodeBase64URLBytes(s string) ([]byte, error) {
-	if b, err := base64.RawURLEncoding.DecodeString(s); err == nil {
-		return b, nil
-	}
-	if b, err := base64.URLEncoding.DecodeString(s); err == nil {
-		return b, nil
-	}
-	if b, err := base64.RawStdEncoding.DecodeString(s); err == nil {
-		return b, nil
-	}
-	return base64.StdEncoding.DecodeString(s)
-}
-
-func decodeBase64URL(s string) (string, error) {
-	b, err := decodeBase64URLBytes(s)
-	if err != nil {
-		return "", err
-	}
-	return string(b), nil
 }
 
 func downloadAttachment(ctx context.Context, svc *gmail.Service, messageID string, a attachmentInfo, dir string) (string, bool, error) {

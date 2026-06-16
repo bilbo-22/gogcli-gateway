@@ -3,7 +3,6 @@ package cmd
 import (
 	"context"
 	"fmt"
-	"os"
 	"strings"
 
 	"google.golang.org/api/chat/v1"
@@ -29,12 +28,20 @@ func (c *ChatDMSendCmd) Run(ctx context.Context, flags *RootFlags) error {
 	if email == "" {
 		return usage("required: email")
 	}
+	if err := validatePlainEmail("email", email); err != nil {
+		return err
+	}
 
 	text := strings.TrimSpace(c.Text)
 	if text == "" {
 		return usage("required: --text")
 	}
 	thread := strings.TrimSpace(c.Thread)
+	if thread != "" {
+		if _, err := normalizeThread("spaces/_", thread); err != nil {
+			return usage(fmt.Sprintf("invalid thread: %v", err))
+		}
+	}
 
 	if err := dryRunExit(ctx, flags, "chat.dm.send", map[string]any{
 		"email":  email,
@@ -52,7 +59,7 @@ func (c *ChatDMSendCmd) Run(ctx context.Context, flags *RootFlags) error {
 		return err
 	}
 
-	svc, err := newChatService(ctx, account)
+	svc, err := chatService(ctx, account)
 	if err != nil {
 		return err
 	}
@@ -85,18 +92,18 @@ func (c *ChatDMSendCmd) Run(ctx context.Context, flags *RootFlags) error {
 	}
 
 	if outfmt.IsJSON(ctx) {
-		return outfmt.WriteJSON(ctx, os.Stdout, map[string]any{"message": resp})
+		return outfmt.WriteJSON(ctx, stdoutWriter(ctx), map[string]any{"message": resp})
 	}
 
 	if resp == nil {
-		u.Out().Printf("space\t%s", space.Name)
+		u.Out().Linef("space\t%s", space.Name)
 		return nil
 	}
 	if resp.Name != "" {
-		u.Out().Printf("resource\t%s", resp.Name)
+		u.Out().Linef("resource\t%s", resp.Name)
 	}
 	if resp.Thread != nil && resp.Thread.Name != "" {
-		u.Out().Printf("thread\t%s", resp.Thread.Name)
+		u.Out().Linef("thread\t%s", resp.Thread.Name)
 	}
 	return nil
 }
@@ -110,6 +117,9 @@ func (c *ChatDMSpaceCmd) Run(ctx context.Context, flags *RootFlags) error {
 	email := strings.TrimSpace(c.Email)
 	if email == "" {
 		return usage("required: email")
+	}
+	if err := validatePlainEmail("email", email); err != nil {
+		return err
 	}
 
 	if err := dryRunExit(ctx, flags, "chat.dm.space", map[string]any{
@@ -126,7 +136,7 @@ func (c *ChatDMSpaceCmd) Run(ctx context.Context, flags *RootFlags) error {
 		return err
 	}
 
-	svc, err := newChatService(ctx, account)
+	svc, err := chatService(ctx, account)
 	if err != nil {
 		return err
 	}
@@ -140,13 +150,13 @@ func (c *ChatDMSpaceCmd) Run(ctx context.Context, flags *RootFlags) error {
 	}
 
 	if outfmt.IsJSON(ctx) {
-		return outfmt.WriteJSON(ctx, os.Stdout, map[string]any{"space": space})
+		return outfmt.WriteJSON(ctx, stdoutWriter(ctx), map[string]any{"space": space})
 	}
 	if space.Name != "" {
-		u.Out().Printf("resource\t%s", space.Name)
+		u.Out().Linef("resource\t%s", space.Name)
 	}
 	if space.DisplayName != "" {
-		u.Out().Printf("name\t%s", space.DisplayName)
+		u.Out().Linef("name\t%s", space.DisplayName)
 	}
 	return nil
 }

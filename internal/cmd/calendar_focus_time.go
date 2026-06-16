@@ -2,14 +2,9 @@ package cmd
 
 import (
 	"context"
-	"fmt"
-	"os"
 	"strings"
 
 	"google.golang.org/api/calendar/v3"
-
-	"github.com/steipete/gogcli/internal/outfmt"
-	"github.com/steipete/gogcli/internal/ui"
 )
 
 type CalendarFocusTimeCmd struct {
@@ -20,12 +15,18 @@ type CalendarFocusTimeCmd struct {
 	AutoDecline    string   `name:"auto-decline" help:"Auto-decline mode: none, all, new" default:"all"`
 	DeclineMessage string   `name:"decline-message" help:"Message for declined invitations"`
 	ChatStatus     string   `name:"chat-status" help:"Chat status: available, doNotDisturb" default:"doNotDisturb"`
-	Recurrence     []string `name:"rrule" help:"Recurrence rules. Can be repeated."`
+	Recurrence     []string `name:"rrule" help:"Recurrence rules. Can be repeated." sep:"none"`
 }
 
 func (c *CalendarFocusTimeCmd) Run(ctx context.Context, flags *RootFlags) error {
-	u := ui.FromContext(ctx)
-	calendarID := strings.TrimSpace(c.CalendarID)
+	store, err := commandConfigStore(ctx)
+	if err != nil {
+		return err
+	}
+	calendarID, err := prepareCalendarID(store, c.CalendarID, true)
+	if err != nil {
+		return err
+	}
 	autoDeclineMode, err := validateAutoDeclineMode(c.AutoDecline)
 	if err != nil {
 		return err
@@ -35,11 +36,17 @@ func (c *CalendarFocusTimeCmd) Run(ctx context.Context, flags *RootFlags) error 
 	if err != nil {
 		return err
 	}
+	if validateErr := validateCalendarDateTimeFlag("--from", c.From); validateErr != nil {
+		return validateErr
+	}
+	if validateErr := validateCalendarDateTimeFlag("--to", c.To); validateErr != nil {
+		return validateErr
+	}
 
 	event := &calendar.Event{
 		Summary:      strings.TrimSpace(c.Summary),
-		Start:        &calendar.EventDateTime{DateTime: strings.TrimSpace(c.From)},
-		End:          &calendar.EventDateTime{DateTime: strings.TrimSpace(c.To)},
+		Start:        buildEventDateTime(c.From, false),
+		End:          buildEventDateTime(c.To, false),
 		EventType:    eventTypeFocusTime,
 		Transparency: "opaque",
 		FocusTimeProperties: &calendar.EventFocusTimeProperties{
@@ -50,39 +57,23 @@ func (c *CalendarFocusTimeCmd) Run(ctx context.Context, flags *RootFlags) error 
 		Recurrence: buildRecurrence(c.Recurrence),
 	}
 
-	if dryRunErr := dryRunExit(ctx, flags, "calendar.focus_time", map[string]any{
+	if dryRunErr := dryRunExit(ctx, flags, "calendar.focus-time", map[string]any{
 		"calendar_id": calendarID,
 		"event":       event,
 	}); dryRunErr != nil {
 		return dryRunErr
 	}
 
-	account, err := requireAccount(flags)
+	mutation, err := newCalendarMutationContext(ctx, flags, calendarID)
 	if err != nil {
 		return err
 	}
 
-	svc, err := newCalendarService(ctx, account)
+	created, err := mutation.insertEvent(ctx, event, calendarInsertOptions{})
 	if err != nil {
 		return err
 	}
-
-	calendarID, err = resolveCalendarID(ctx, svc, calendarID)
-	if err != nil {
-		return err
-	}
-
-	created, err := svc.Events.Insert(calendarID, event).Do()
-	if err != nil {
-		return err
-	}
-
-	tz, loc, _ := getCalendarLocation(ctx, svc, calendarID)
-	if outfmt.IsJSON(ctx) {
-		return outfmt.WriteJSON(ctx, os.Stdout, map[string]any{"event": wrapEventWithDaysWithTimezone(created, tz, loc)})
-	}
-	printCalendarEventWithTimezone(u, created, tz, loc)
-	return nil
+	return mutation.writeEvent(ctx, created)
 }
 
 func validateAutoDeclineMode(s string) (string, error) {
@@ -95,7 +86,7 @@ func validateAutoDeclineMode(s string) (string, error) {
 	case "new":
 		return "declineOnlyNewConflictingInvitations", nil
 	default:
-		return "", fmt.Errorf("invalid auto-decline mode: %q (must be none, all, or new)", s)
+		return "", usagef("invalid auto-decline mode: %q (must be none, all, or new)", s)
 	}
 }
 
@@ -107,6 +98,6 @@ func validateChatStatus(s string) (string, error) {
 	case "donotdisturb", "dnd":
 		return "doNotDisturb", nil
 	default:
-		return "", fmt.Errorf("invalid chat status: %q (must be available or doNotDisturb)", s)
+		return "", usagef("invalid chat status: %q (must be available or doNotDisturb)", s)
 	}
 }

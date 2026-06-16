@@ -21,12 +21,13 @@ func setupKeyringEnv(t *testing.T) {
 
 func TestSetAndGetSecret_FileBackend(t *testing.T) {
 	setupKeyringEnv(t)
+	store := openSystemTestStore(t)
 
-	if err := SetSecret("test/key", []byte("value")); err != nil {
+	if err := store.SetSecret("test/key", []byte("value")); err != nil {
 		t.Fatalf("SetSecret: %v", err)
 	}
 
-	if val, err := GetSecret("test/key"); err != nil {
+	if val, err := store.GetSecret("test/key"); err != nil {
 		t.Fatalf("GetSecret: %v", err)
 	} else if string(val) != "value" {
 		t.Fatalf("unexpected value: %q", val)
@@ -64,7 +65,7 @@ func TestEnsureKeyringDir(t *testing.T) {
 	t.Setenv("HOME", home)
 	t.Setenv("XDG_CONFIG_HOME", filepath.Join(home, "xdg"))
 
-	_, err := config.EnsureKeyringDir()
+	_, err := testSystemLayout(t, config.PathKindConfig, config.PathKindData).EnsureKeyringDir()
 	if err != nil {
 		t.Fatalf("EnsureKeyringDir: %v", err)
 	}

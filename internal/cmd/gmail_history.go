@@ -2,7 +2,6 @@ package cmd
 
 import (
 	"context"
-	"os"
 	"strings"
 
 	"github.com/steipete/gogcli/internal/outfmt"
@@ -19,6 +18,9 @@ type GmailHistoryCmd struct {
 
 func (c *GmailHistoryCmd) Run(ctx context.Context, flags *RootFlags) error {
 	u := ui.FromContext(ctx)
+	if err := validateGmailMaxResults(c.Max); err != nil {
+		return err
+	}
 	account, err := requireAccount(flags)
 	if err != nil {
 		return err
@@ -28,10 +30,10 @@ func (c *GmailHistoryCmd) Run(ctx context.Context, flags *RootFlags) error {
 	}
 	startID, err := parseHistoryID(c.Since)
 	if err != nil {
-		return err
+		return usage(err.Error())
 	}
 
-	svc, err := newGmailService(ctx, account)
+	svc, err := gmailService(ctx, account)
 	if err != nil {
 		return err
 	}
@@ -43,31 +45,20 @@ func (c *GmailHistoryCmd) Run(ctx context.Context, flags *RootFlags) error {
 		if strings.TrimSpace(pageToken) != "" {
 			call = call.PageToken(pageToken)
 		}
-		resp, err := call.Context(ctx).Do()
-		if err != nil {
-			return nil, "", err
+		resp, callErr := call.Context(ctx).Do()
+		if callErr != nil {
+			return nil, "", callErr
 		}
 		historyID = formatHistoryID(resp.HistoryId)
 		historyIDs := collectHistoryMessageIDs(resp)
 		return historyIDs.FetchIDs, resp.NextPageToken, nil
 	}
-	var ids []string
-	nextPageToken := ""
-	if c.All {
-		all, err := collectAllPages(c.Page, fetch)
-		if err != nil {
-			return err
-		}
-		ids = all
-	} else {
-		var err error
-		ids, nextPageToken, err = fetch(c.Page)
-		if err != nil {
-			return err
-		}
+	ids, nextPageToken, err := loadPagedItems(c.Page, c.All, fetch)
+	if err != nil {
+		return err
 	}
 	if outfmt.IsJSON(ctx) {
-		if err := outfmt.WriteJSON(ctx, os.Stdout, map[string]any{
+		if err := outfmt.WriteJSON(ctx, stdoutWriter(ctx), map[string]any{
 			"historyId":     historyID,
 			"messages":      ids,
 			"nextPageToken": nextPageToken,
@@ -87,6 +78,6 @@ func (c *GmailHistoryCmd) Run(ctx context.Context, flags *RootFlags) error {
 	for _, id := range ids {
 		u.Out().Println(id)
 	}
-	printNextPageHint(u, nextPageToken)
+	printNextPageHintWithAll(u, nextPageToken, "--all/--all-pages")
 	return nil
 }

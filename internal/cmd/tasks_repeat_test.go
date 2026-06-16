@@ -1,26 +1,17 @@
 package cmd
 
 import (
-	"context"
+	"bytes"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
 	"net/http/httptest"
-	"os"
 	"sync/atomic"
 	"testing"
-
-	"google.golang.org/api/option"
-	"google.golang.org/api/tasks/v1"
-
-	"github.com/steipete/gogcli/internal/outfmt"
-	"github.com/steipete/gogcli/internal/ui"
 )
 
 func TestTasksAddCmd_RepeatCreatesMultiple(t *testing.T) {
-	origNew := newTasksService
-	t.Cleanup(func() { newTasksService = origNew })
-
 	var (
 		counter   int32
 		gotTitles []string
@@ -62,33 +53,20 @@ func TestTasksAddCmd_RepeatCreatesMultiple(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	svc, err := tasks.NewService(context.Background(),
-		option.WithoutAuthentication(),
-		option.WithHTTPClient(srv.Client()),
-		option.WithEndpoint(srv.URL+"/"),
+	var output bytes.Buffer
+	ctx := withTasksTestService(
+		newCmdRuntimeJSONOutputContext(t, &output, io.Discard),
+		newTasksServiceFromServer(t, srv),
 	)
-	if err != nil {
-		t.Fatalf("NewService: %v", err)
+	if err := runKong(t, &TasksAddCmd{}, []string{
+		"l1",
+		"--title", "Task",
+		"--due", "2025-01-01",
+		"--repeat", "daily",
+		"--repeat-count", "3",
+	}, ctx, &RootFlags{Account: "a@b.com"}); err != nil {
+		t.Fatalf("runKong: %v", err)
 	}
-	newTasksService = func(context.Context, string) (*tasks.Service, error) { return svc, nil }
-
-	u, err := ui.New(ui.Options{Stdout: os.Stdout, Stderr: os.Stderr, Color: "never"})
-	if err != nil {
-		t.Fatalf("ui.New: %v", err)
-	}
-	ctx := outfmt.WithMode(ui.WithUI(context.Background(), u), outfmt.Mode{JSON: true})
-
-	out := captureStdout(t, func() {
-		if err := runKong(t, &TasksAddCmd{}, []string{
-			"l1",
-			"--title", "Task",
-			"--due", "2025-01-01",
-			"--repeat", "daily",
-			"--repeat-count", "3",
-		}, ctx, &RootFlags{Account: "a@b.com"}); err != nil {
-			t.Fatalf("runKong: %v", err)
-		}
-	})
 
 	if len(gotTitles) != 3 || len(gotDue) != 3 {
 		t.Fatalf("expected 3 tasks, got titles=%d due=%d", len(gotTitles), len(gotDue))
@@ -106,7 +84,7 @@ func TestTasksAddCmd_RepeatCreatesMultiple(t *testing.T) {
 			ID string `json:"id"`
 		} `json:"tasks"`
 	}
-	if err := json.Unmarshal([]byte(out), &parsed); err != nil {
+	if err := json.Unmarshal(output.Bytes(), &parsed); err != nil {
 		t.Fatalf("json parse: %v", err)
 	}
 	if parsed.Count != 3 || len(parsed.Tasks) != 3 {
@@ -115,9 +93,6 @@ func TestTasksAddCmd_RepeatCreatesMultiple(t *testing.T) {
 }
 
 func TestTasksAddCmd_RepeatUntilDateOnlyWithTimeDue(t *testing.T) {
-	origNew := newTasksService
-	t.Cleanup(func() { newTasksService = origNew })
-
 	var gotDue []string
 
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -150,38 +125,134 @@ func TestTasksAddCmd_RepeatUntilDateOnlyWithTimeDue(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	svc, err := tasks.NewService(context.Background(),
-		option.WithoutAuthentication(),
-		option.WithHTTPClient(srv.Client()),
-		option.WithEndpoint(srv.URL+"/"),
+	ctx := withTasksTestService(
+		newCmdRuntimeJSONOutputContext(t, io.Discard, io.Discard),
+		newTasksServiceFromServer(t, srv),
 	)
-	if err != nil {
-		t.Fatalf("NewService: %v", err)
+	if err := runKong(t, &TasksAddCmd{}, []string{
+		"l1",
+		"--title", "Task",
+		"--due", "2025-01-01T10:00:00Z",
+		"--repeat", "daily",
+		"--repeat-until", "2025-01-03",
+	}, ctx, &RootFlags{Account: "a@b.com"}); err != nil {
+		t.Fatalf("runKong: %v", err)
 	}
-	newTasksService = func(context.Context, string) (*tasks.Service, error) { return svc, nil }
-
-	u, err := ui.New(ui.Options{Stdout: os.Stdout, Stderr: os.Stderr, Color: "never"})
-	if err != nil {
-		t.Fatalf("ui.New: %v", err)
-	}
-	ctx := outfmt.WithMode(ui.WithUI(context.Background(), u), outfmt.Mode{JSON: true})
-
-	_ = captureStdout(t, func() {
-		if err := runKong(t, &TasksAddCmd{}, []string{
-			"l1",
-			"--title", "Task",
-			"--due", "2025-01-01T10:00:00Z",
-			"--repeat", "daily",
-			"--repeat-until", "2025-01-03",
-		}, ctx, &RootFlags{Account: "a@b.com"}); err != nil {
-			t.Fatalf("runKong: %v", err)
-		}
-	})
 
 	if len(gotDue) != 3 {
 		t.Fatalf("expected 3 tasks, got due=%d", len(gotDue))
 	}
 	if gotDue[0] != "2025-01-01T10:00:00Z" || gotDue[1] != "2025-01-02T10:00:00Z" || gotDue[2] != "2025-01-03T10:00:00Z" {
+		t.Fatalf("unexpected due schedule: %#v", gotDue)
+	}
+}
+
+func TestTasksAddCmd_RecurAliasCreatesMultiple(t *testing.T) {
+	var gotDue []string
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/tasks/v1/users/@me/lists" && r.Method == http.MethodGet {
+			w.Header().Set("Content-Type", "application/json")
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"items": []map[string]any{
+					{"id": "l1", "title": "One"},
+				},
+			})
+			return
+		}
+		if !(r.URL.Path == "/tasks/v1/lists/l1/tasks" && r.Method == http.MethodPost) {
+			http.NotFound(w, r)
+			return
+		}
+		var body map[string]any
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+		if due, ok := body["due"].(string); ok {
+			gotDue = append(gotDue, due)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"id":  "t1",
+			"due": body["due"],
+		})
+	}))
+	defer srv.Close()
+
+	ctx := withTasksTestService(
+		newCmdRuntimeJSONOutputContext(t, io.Discard, io.Discard),
+		newTasksServiceFromServer(t, srv),
+	)
+	if err := runKong(t, &TasksAddCmd{}, []string{
+		"l1",
+		"--title", "Task",
+		"--due", "2025-01-01",
+		"--recur", "weekly",
+		"--repeat-count", "3",
+	}, ctx, &RootFlags{Account: "a@b.com"}); err != nil {
+		t.Fatalf("runKong: %v", err)
+	}
+
+	if len(gotDue) != 3 {
+		t.Fatalf("expected 3 tasks, got due=%d", len(gotDue))
+	}
+	if gotDue[0] != "2025-01-01T00:00:00Z" || gotDue[1] != "2025-01-08T00:00:00Z" || gotDue[2] != "2025-01-15T00:00:00Z" {
+		t.Fatalf("unexpected due schedule: %#v", gotDue)
+	}
+}
+
+func TestTasksAddCmd_RecurRRuleIntervalCreatesMultiple(t *testing.T) {
+	var gotDue []string
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/tasks/v1/users/@me/lists" && r.Method == http.MethodGet {
+			w.Header().Set("Content-Type", "application/json")
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"items": []map[string]any{
+					{"id": "l1", "title": "One"},
+				},
+			})
+			return
+		}
+		if !(r.URL.Path == "/tasks/v1/lists/l1/tasks" && r.Method == http.MethodPost) {
+			http.NotFound(w, r)
+			return
+		}
+		var body map[string]any
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+		if due, ok := body["due"].(string); ok {
+			gotDue = append(gotDue, due)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"id":  "t1",
+			"due": body["due"],
+		})
+	}))
+	defer srv.Close()
+
+	ctx := withTasksTestService(
+		newCmdRuntimeJSONOutputContext(t, io.Discard, io.Discard),
+		newTasksServiceFromServer(t, srv),
+	)
+	if err := runKong(t, &TasksAddCmd{}, []string{
+		"l1",
+		"--title", "Task",
+		"--due", "2025-01-01",
+		"--recur-rrule", "FREQ=DAILY;INTERVAL=2",
+		"--repeat-count", "3",
+	}, ctx, &RootFlags{Account: "a@b.com"}); err != nil {
+		t.Fatalf("runKong: %v", err)
+	}
+
+	if len(gotDue) != 3 {
+		t.Fatalf("expected 3 tasks, got due=%d", len(gotDue))
+	}
+	if gotDue[0] != "2025-01-01T00:00:00Z" || gotDue[1] != "2025-01-03T00:00:00Z" || gotDue[2] != "2025-01-05T00:00:00Z" {
 		t.Fatalf("unexpected due schedule: %#v", gotDue)
 	}
 }
@@ -218,6 +289,46 @@ func TestParseTaskDate_FlexibleFormats(t *testing.T) {
 			}
 			if gotHasTime != tc.wantHasTime {
 				t.Fatalf("hasTime=%v want %v", gotHasTime, tc.wantHasTime)
+			}
+		})
+	}
+}
+
+func TestParseRepeatRRule(t *testing.T) {
+	t.Parallel()
+
+	testCases := []struct {
+		name         string
+		raw          string
+		wantUnit     repeatUnit
+		wantInterval int
+		wantErr      bool
+	}{
+		{name: "freq only", raw: "FREQ=WEEKLY", wantUnit: repeatWeekly, wantInterval: 1},
+		{name: "rrule prefix and interval", raw: "RRULE:FREQ=MONTHLY;INTERVAL=2", wantUnit: repeatMonthly, wantInterval: 2},
+		{name: "missing freq", raw: "INTERVAL=2", wantErr: true},
+		{name: "invalid interval", raw: "FREQ=DAILY;INTERVAL=0", wantErr: true},
+		{name: "duplicate freq", raw: "FREQ=DAILY;FREQ=WEEKLY", wantErr: true},
+		{name: "duplicate interval", raw: "FREQ=DAILY;INTERVAL=1;INTERVAL=2", wantErr: true},
+		{name: "unsupported key", raw: "FREQ=WEEKLY;BYDAY=MO", wantErr: true},
+	}
+
+	for _, tc := range testCases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			gotUnit, gotInterval, err := parseRepeatRRule(tc.raw)
+			if tc.wantErr {
+				if err == nil {
+					t.Fatalf("expected error")
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("parseRepeatRRule: %v", err)
+			}
+			if gotUnit != tc.wantUnit || gotInterval != tc.wantInterval {
+				t.Fatalf("got unit=%v interval=%d want unit=%v interval=%d", gotUnit, gotInterval, tc.wantUnit, tc.wantInterval)
 			}
 		})
 	}

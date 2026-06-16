@@ -13,9 +13,6 @@ import (
 )
 
 func TestCalendarConflictsCmd_WithConflicts_JSON(t *testing.T) {
-	origNew := newCalendarService
-	t.Cleanup(func() { newCalendarService = origNew })
-
 	srv := httptest.NewServer(withPrimaryCalendar(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if strings.Contains(r.URL.Path, "/freeBusy") && r.Method == http.MethodPost {
 			w.Header().Set("Content-Type", "application/json")
@@ -53,22 +50,18 @@ func TestCalendarConflictsCmd_WithConflicts_JSON(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewService: %v", err)
 	}
-	newCalendarService = func(context.Context, string) (*calendar.Service, error) { return svc, nil }
-
-	out := captureStdout(t, func() {
-		_ = captureStderr(t, func() {
-			if err := Execute([]string{
-				"--json",
-				"--account", "a@b.com",
-				"calendar", "conflicts",
-				"--from", "2024-12-13T09:00:00Z",
-				"--to", "2024-12-13T12:00:00Z",
-				"--calendars", "primary,work@example.com",
-			}); err != nil {
-				t.Fatalf("Execute: %v", err)
-			}
-		})
-	})
+	result := executeWithCalendarTestService(t, []string{
+		"--json",
+		"--account", "a@b.com",
+		"calendar", "conflicts",
+		"--from", "2024-12-13T09:00:00Z",
+		"--to", "2024-12-13T12:00:00Z",
+		"--calendars", "primary,work@example.com",
+	}, svc)
+	if result.err != nil {
+		t.Fatalf("Execute: %v", result.err)
+	}
+	out := result.stdout
 
 	var parsed struct {
 		Conflicts []struct {
@@ -100,9 +93,6 @@ func TestCalendarConflictsCmd_WithConflicts_JSON(t *testing.T) {
 }
 
 func TestCalendarConflictsCmd_NoConflicts_JSON(t *testing.T) {
-	origNew := newCalendarService
-	t.Cleanup(func() { newCalendarService = origNew })
-
 	srv := httptest.NewServer(withPrimaryCalendar(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if strings.Contains(r.URL.Path, "/freeBusy") && r.Method == http.MethodPost {
 			w.Header().Set("Content-Type", "application/json")
@@ -140,26 +130,22 @@ func TestCalendarConflictsCmd_NoConflicts_JSON(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewService: %v", err)
 	}
-	newCalendarService = func(context.Context, string) (*calendar.Service, error) { return svc, nil }
-
-	out := captureStdout(t, func() {
-		_ = captureStderr(t, func() {
-			if err := Execute([]string{
-				"--json",
-				"--account", "a@b.com",
-				"calendar", "conflicts",
-				"--from", "2024-12-13T09:00:00Z",
-				"--to", "2024-12-13T14:00:00Z",
-				"--calendars", "primary,work@example.com",
-			}); err != nil {
-				t.Fatalf("Execute: %v", err)
-			}
-		})
-	})
+	result := executeWithCalendarTestService(t, []string{
+		"--json",
+		"--account", "a@b.com",
+		"calendar", "conflicts",
+		"--from", "2024-12-13T09:00:00Z",
+		"--to", "2024-12-13T14:00:00Z",
+		"--calendars", "primary,work@example.com",
+	}, svc)
+	if result.err != nil {
+		t.Fatalf("Execute: %v", result.err)
+	}
+	out := result.stdout
 
 	var parsed struct {
-		Conflicts []map[string]any `json:"conflicts"`
-		Count     int              `json:"count"`
+		Conflicts *[]map[string]any `json:"conflicts"`
+		Count     int               `json:"count"`
 	}
 	if err := json.Unmarshal([]byte(out), &parsed); err != nil {
 		t.Fatalf("json parse: %v\nout=%q", err, out)
@@ -167,15 +153,15 @@ func TestCalendarConflictsCmd_NoConflicts_JSON(t *testing.T) {
 	if parsed.Count != 0 {
 		t.Errorf("expected count 0, got %d", parsed.Count)
 	}
-	if len(parsed.Conflicts) != 0 {
-		t.Errorf("expected 0 conflicts, got %d", len(parsed.Conflicts))
+	if parsed.Conflicts == nil {
+		t.Fatal("expected conflicts to be an empty array, got null")
+	}
+	if len(*parsed.Conflicts) != 0 {
+		t.Errorf("expected 0 conflicts, got %d", len(*parsed.Conflicts))
 	}
 }
 
 func TestCalendarConflictsCmd_TableOutput(t *testing.T) {
-	origNew := newCalendarService
-	t.Cleanup(func() { newCalendarService = origNew })
-
 	srv := httptest.NewServer(withPrimaryCalendar(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if strings.Contains(r.URL.Path, "/freeBusy") && r.Method == http.MethodPost {
 			w.Header().Set("Content-Type", "application/json")
@@ -213,21 +199,17 @@ func TestCalendarConflictsCmd_TableOutput(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewService: %v", err)
 	}
-	newCalendarService = func(context.Context, string) (*calendar.Service, error) { return svc, nil }
-
-	out := captureStdout(t, func() {
-		_ = captureStderr(t, func() {
-			if err := Execute([]string{
-				"--account", "a@b.com",
-				"calendar", "conflicts",
-				"--from", "2024-12-13T09:00:00Z",
-				"--to", "2024-12-13T12:00:00Z",
-				"--calendars", "primary,work@example.com",
-			}); err != nil {
-				t.Fatalf("Execute: %v", err)
-			}
-		})
-	})
+	result := executeWithCalendarTestService(t, []string{
+		"--account", "a@b.com",
+		"calendar", "conflicts",
+		"--from", "2024-12-13T09:00:00Z",
+		"--to", "2024-12-13T12:00:00Z",
+		"--calendars", "primary,work@example.com",
+	}, svc)
+	if result.err != nil {
+		t.Fatalf("Execute: %v", result.err)
+	}
+	out := result.stdout
 
 	// Verify table output contains expected elements
 	if !strings.Contains(out, "CONFLICTS FOUND: 1") {
@@ -248,9 +230,6 @@ func TestCalendarConflictsCmd_TableOutput(t *testing.T) {
 }
 
 func TestCalendarConflictsCmd_MultiCalendar(t *testing.T) {
-	origNew := newCalendarService
-	t.Cleanup(func() { newCalendarService = origNew })
-
 	srv := httptest.NewServer(withPrimaryCalendar(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if strings.Contains(r.URL.Path, "/freeBusy") && r.Method == http.MethodPost {
 			w.Header().Set("Content-Type", "application/json")
@@ -296,22 +275,18 @@ func TestCalendarConflictsCmd_MultiCalendar(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewService: %v", err)
 	}
-	newCalendarService = func(context.Context, string) (*calendar.Service, error) { return svc, nil }
-
-	out := captureStdout(t, func() {
-		_ = captureStderr(t, func() {
-			if err := Execute([]string{
-				"--json",
-				"--account", "a@b.com",
-				"calendar", "conflicts",
-				"--from", "2024-12-13T09:00:00Z",
-				"--to", "2024-12-13T12:00:00Z",
-				"--calendars", "primary,work@example.com,personal@example.com",
-			}); err != nil {
-				t.Fatalf("Execute: %v", err)
-			}
-		})
-	})
+	result := executeWithCalendarTestService(t, []string{
+		"--json",
+		"--account", "a@b.com",
+		"calendar", "conflicts",
+		"--from", "2024-12-13T09:00:00Z",
+		"--to", "2024-12-13T12:00:00Z",
+		"--calendars", "primary,work@example.com,personal@example.com",
+	}, svc)
+	if result.err != nil {
+		t.Fatalf("Execute: %v", result.err)
+	}
+	out := result.stdout
 
 	var parsed struct {
 		Conflicts []struct {
@@ -345,9 +320,6 @@ func TestCalendarConflictsCmd_MultiCalendar(t *testing.T) {
 }
 
 func TestCalendarConflictsCmd_NoConflicts_TableOutput(t *testing.T) {
-	origNew := newCalendarService
-	t.Cleanup(func() { newCalendarService = origNew })
-
 	srv := httptest.NewServer(withPrimaryCalendar(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if strings.Contains(r.URL.Path, "/freeBusy") && r.Method == http.MethodPost {
 			w.Header().Set("Content-Type", "application/json")
@@ -375,21 +347,17 @@ func TestCalendarConflictsCmd_NoConflicts_TableOutput(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewService: %v", err)
 	}
-	newCalendarService = func(context.Context, string) (*calendar.Service, error) { return svc, nil }
-
-	out := captureStdout(t, func() {
-		_ = captureStderr(t, func() {
-			if err := Execute([]string{
-				"--account", "a@b.com",
-				"calendar", "conflicts",
-				"--from", "2024-12-13T09:00:00Z",
-				"--to", "2024-12-13T14:00:00Z",
-				"--calendars", "primary,work@example.com",
-			}); err != nil {
-				t.Fatalf("Execute: %v", err)
-			}
-		})
-	})
+	result := executeWithCalendarTestService(t, []string{
+		"--account", "a@b.com",
+		"calendar", "conflicts",
+		"--from", "2024-12-13T09:00:00Z",
+		"--to", "2024-12-13T14:00:00Z",
+		"--calendars", "primary,work@example.com",
+	}, svc)
+	if result.err != nil {
+		t.Fatalf("Execute: %v", result.err)
+	}
+	out := result.stdout
 
 	if !strings.Contains(out, "No conflicts found") {
 		t.Errorf("expected 'No conflicts found' message, got: %q", out)

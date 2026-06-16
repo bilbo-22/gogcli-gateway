@@ -3,17 +3,13 @@ package cmd
 import (
 	"context"
 	"encoding/json"
-	"os"
 	"strings"
 
 	scriptapi "google.golang.org/api/script/v1"
 
-	"github.com/steipete/gogcli/internal/googleapi"
 	"github.com/steipete/gogcli/internal/outfmt"
 	"github.com/steipete/gogcli/internal/ui"
 )
-
-var newAppScriptService = googleapi.NewAppScript
 
 type AppScriptCmd struct {
 	Get     AppScriptGetCmd     `cmd:"" name:"get" aliases:"info,show" help:"Get Apps Script project metadata"`
@@ -36,7 +32,7 @@ func (c *AppScriptGetCmd) Run(ctx context.Context, flags *RootFlags) error {
 		return usage("empty scriptId")
 	}
 
-	svc, err := newAppScriptService(ctx, account)
+	svc, err := appScriptService(ctx, account)
 	if err != nil {
 		return err
 	}
@@ -46,27 +42,27 @@ func (c *AppScriptGetCmd) Run(ctx context.Context, flags *RootFlags) error {
 	}
 
 	if outfmt.IsJSON(ctx) {
-		return outfmt.WriteJSON(ctx, os.Stdout, map[string]any{
+		return outfmt.WriteJSON(ctx, stdoutWriter(ctx), map[string]any{
 			"project":    project,
 			"editor_url": appScriptEditURL(scriptID),
 		})
 	}
 
 	u := ui.FromContext(ctx)
-	u.Out().Printf("script_id\t%s", project.ScriptId)
+	u.Out().Linef("script_id\t%s", project.ScriptId)
 	if project.Title != "" {
-		u.Out().Printf("title\t%s", project.Title)
+		u.Out().Linef("title\t%s", project.Title)
 	}
 	if project.ParentId != "" {
-		u.Out().Printf("parent_id\t%s", project.ParentId)
+		u.Out().Linef("parent_id\t%s", project.ParentId)
 	}
 	if project.CreateTime != "" {
-		u.Out().Printf("created\t%s", project.CreateTime)
+		u.Out().Linef("created\t%s", project.CreateTime)
 	}
 	if project.UpdateTime != "" {
-		u.Out().Printf("updated\t%s", project.UpdateTime)
+		u.Out().Linef("updated\t%s", project.UpdateTime)
 	}
-	u.Out().Printf("editor_url\t%s", appScriptEditURL(scriptID))
+	u.Out().Linef("editor_url\t%s", appScriptEditURL(scriptID))
 	return nil
 }
 
@@ -84,7 +80,7 @@ func (c *AppScriptContentCmd) Run(ctx context.Context, flags *RootFlags) error {
 		return usage("empty scriptId")
 	}
 
-	svc, err := newAppScriptService(ctx, account)
+	svc, err := appScriptService(ctx, account)
 	if err != nil {
 		return err
 	}
@@ -94,19 +90,19 @@ func (c *AppScriptContentCmd) Run(ctx context.Context, flags *RootFlags) error {
 	}
 
 	if outfmt.IsJSON(ctx) {
-		return outfmt.WriteJSON(ctx, os.Stdout, map[string]any{
+		return outfmt.WriteJSON(ctx, stdoutWriter(ctx), map[string]any{
 			"content": content,
 		})
 	}
 
 	u := ui.FromContext(ctx)
-	u.Out().Printf("script_id\t%s", content.ScriptId)
-	u.Out().Printf("files\t%d", len(content.Files))
+	u.Out().Linef("script_id\t%s", content.ScriptId)
+	u.Out().Linef("files\t%d", len(content.Files))
 	for _, file := range content.Files {
 		if file == nil {
 			continue
 		}
-		u.Out().Printf("file\t%s\t%s", file.Name, file.Type)
+		u.Out().Linef("file\t%s\t%s", file.Name, file.Type)
 	}
 	return nil
 }
@@ -137,7 +133,7 @@ func (c *AppScriptRunCmd) Run(ctx context.Context, flags *RootFlags) error {
 		return err
 	}
 
-	svc, err := newAppScriptService(ctx, account)
+	svc, err := appScriptService(ctx, account)
 	if err != nil {
 		return err
 	}
@@ -151,27 +147,27 @@ func (c *AppScriptRunCmd) Run(ctx context.Context, flags *RootFlags) error {
 	}
 
 	if outfmt.IsJSON(ctx) {
-		return outfmt.WriteJSON(ctx, os.Stdout, map[string]any{
+		return outfmt.WriteJSON(ctx, stdoutWriter(ctx), map[string]any{
 			"operation": op,
 		})
 	}
 
 	u := ui.FromContext(ctx)
-	u.Out().Printf("done\t%t", op.Done)
+	u.Out().Linef("done\t%t", op.Done)
 
 	if op.Error != nil {
 		if op.Error.Code != 0 {
-			u.Out().Printf("error_code\t%d", op.Error.Code)
+			u.Out().Linef("error_code\t%d", op.Error.Code)
 		}
 		if op.Error.Message != "" {
-			u.Out().Printf("error\t%s", op.Error.Message)
+			u.Out().Linef("error\t%s", op.Error.Message)
 		}
 		if detail := parseExecutionError(op.Error); detail != nil {
 			if detail.ErrorType != "" {
-				u.Out().Printf("error_type\t%s", detail.ErrorType)
+				u.Out().Linef("error_type\t%s", detail.ErrorType)
 			}
 			if detail.ErrorMessage != "" {
-				u.Out().Printf("error_message\t%s", detail.ErrorMessage)
+				u.Out().Linef("error_message\t%s", detail.ErrorMessage)
 			}
 		}
 		return nil
@@ -181,7 +177,7 @@ func (c *AppScriptRunCmd) Run(ctx context.Context, flags *RootFlags) error {
 		var execResp scriptapi.ExecutionResponse
 		if err := json.Unmarshal(op.Response, &execResp); err == nil && execResp.Result != nil {
 			if b, marshalErr := json.Marshal(execResp.Result); marshalErr == nil {
-				u.Out().Printf("result\t%s", string(b))
+				u.Out().Linef("result\t%s", string(b))
 			}
 		}
 	}
@@ -194,10 +190,6 @@ type AppScriptCreateCmd struct {
 }
 
 func (c *AppScriptCreateCmd) Run(ctx context.Context, flags *RootFlags) error {
-	account, err := requireAccount(flags)
-	if err != nil {
-		return err
-	}
 	title := strings.TrimSpace(c.Title)
 	if title == "" {
 		return usage("empty --title")
@@ -211,7 +203,12 @@ func (c *AppScriptCreateCmd) Run(ctx context.Context, flags *RootFlags) error {
 		return dryRunErr
 	}
 
-	svc, err := newAppScriptService(ctx, account)
+	account, err := requireAccount(flags)
+	if err != nil {
+		return err
+	}
+
+	svc, err := appScriptService(ctx, account)
 	if err != nil {
 		return err
 	}
@@ -224,7 +221,7 @@ func (c *AppScriptCreateCmd) Run(ctx context.Context, flags *RootFlags) error {
 	}
 
 	if outfmt.IsJSON(ctx) {
-		return outfmt.WriteJSON(ctx, os.Stdout, map[string]any{
+		return outfmt.WriteJSON(ctx, stdoutWriter(ctx), map[string]any{
 			"created":    true,
 			"project":    project,
 			"editor_url": appScriptEditURL(project.ScriptId),
@@ -232,15 +229,15 @@ func (c *AppScriptCreateCmd) Run(ctx context.Context, flags *RootFlags) error {
 	}
 
 	u := ui.FromContext(ctx)
-	u.Out().Printf("created\ttrue")
-	u.Out().Printf("script_id\t%s", project.ScriptId)
+	u.Out().Linef("created\ttrue")
+	u.Out().Linef("script_id\t%s", project.ScriptId)
 	if project.Title != "" {
-		u.Out().Printf("title\t%s", project.Title)
+		u.Out().Linef("title\t%s", project.Title)
 	}
 	if project.ParentId != "" {
-		u.Out().Printf("parent_id\t%s", project.ParentId)
+		u.Out().Linef("parent_id\t%s", project.ParentId)
 	}
-	u.Out().Printf("editor_url\t%s", appScriptEditURL(project.ScriptId))
+	u.Out().Linef("editor_url\t%s", appScriptEditURL(project.ScriptId))
 	return nil
 }
 

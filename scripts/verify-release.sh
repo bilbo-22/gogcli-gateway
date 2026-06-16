@@ -10,6 +10,9 @@ fi
 root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$root"
 
+repo="$(gh repo view --json nameWithOwner -q .nameWithOwner)"
+tag_sha="$(git rev-list -n1 "v$version")"
+
 changelog="CHANGELOG.md"
 if ! rg -q "^## ${version} - " "$changelog"; then
   echo "missing changelog section for $version" >&2
@@ -44,21 +47,22 @@ if [[ "$assets_count" -eq 0 ]]; then
   exit 2
 fi
 
-release_run_id="$(gh run list -L 20 --workflow release.yml --json databaseId,conclusion,headBranch -q ".[] | select(.headBranch==\"v$version\") | select(.conclusion==\"success\") | .databaseId" | head -n1)"
+release_run_id="$(gh api "repos/$repo/actions/runs" --jq ".workflow_runs[] | select(.name==\"release\") | select(.head_branch==\"v$version\") | select(.head_sha==\"$tag_sha\") | select(.conclusion==\"success\") | .id" | head -n1)"
 if [[ -z "$release_run_id" ]]; then
   echo "release workflow not green for v$version" >&2
   exit 2
 fi
 
-ci_ok="$(gh run list -L 1 --workflow ci --branch main --json conclusion -q '.[0].conclusion')"
-if [[ "$ci_ok" != "success" ]]; then
-  echo "CI not green for main" >&2
+ci_run_id="$(gh api "repos/$repo/actions/runs" --jq ".workflow_runs[] | select(.name==\"ci\") | select(.head_branch==\"v$version\") | select(.head_sha==\"$tag_sha\") | select(.conclusion==\"success\") | .id" | head -n1)"
+if [[ -z "$ci_run_id" ]]; then
+  echo "CI not green for v$version at $tag_sha" >&2
   exit 2
 fi
 
 make ci
 
-formula_path="../homebrew-tap/Formula/gogcli.rb"
+tap_name="openclaw/tap"
+formula_path="../openclaw-homebrew-tap/Formula/gogcli.rb"
 if [[ ! -f "$formula_path" ]]; then
   echo "missing formula at $formula_path" >&2
   exit 2
@@ -92,10 +96,46 @@ darwin_arm64_expected="$(sha_for_asset "gogcli_${version}_darwin_arm64.tar.gz")"
 linux_amd64_expected="$(sha_for_asset "gogcli_${version}_linux_amd64.tar.gz")"
 linux_arm64_expected="$(sha_for_asset "gogcli_${version}_linux_arm64.tar.gz")"
 
-darwin_amd64_formula="$(formula_sha_for_url "gogcli_#{version}_darwin_amd64.tar.gz")"
-darwin_arm64_formula="$(formula_sha_for_url "gogcli_#{version}_darwin_arm64.tar.gz")"
-linux_amd64_formula="$(formula_sha_for_url "gogcli_#{version}_linux_amd64.tar.gz")"
-linux_arm64_formula="$(formula_sha_for_url "gogcli_#{version}_linux_arm64.tar.gz")"
+darwin_amd64_formula="$(formula_sha_for_url "gogcli_${version}_darwin_amd64.tar.gz")"
+darwin_arm64_formula="$(formula_sha_for_url "gogcli_${version}_darwin_arm64.tar.gz")"
+linux_amd64_formula="$(formula_sha_for_url "gogcli_${version}_linux_amd64.tar.gz")"
+linux_arm64_formula="$(formula_sha_for_url "gogcli_${version}_linux_arm64.tar.gz")"
+
+verify_darwin_asset_signature() {
+  local asset="$1"
+  if [[ "$(uname -s)" != "Darwin" ]]; then
+    echo "skipping macOS signature verification for $asset (not running on Darwin)" >&2
+    return 0
+  fi
+
+  local work
+  work="$(mktemp -d -t gogcli-signature-check)"
+  tar -xzf "$tmp_assets_dir/$asset" -C "$work"
+
+  local bin="$work/gog"
+  if [[ ! -x "$bin" ]]; then
+    echo "missing gog binary in $asset" >&2
+    rm -rf "$work"
+    exit 2
+  fi
+
+  codesign --verify --deep --strict --verbose=2 "$bin"
+
+  local details
+  details="$(codesign -dv --verbose=4 "$bin" 2>&1)"
+  if grep -q "Signature=adhoc" <<<"$details"; then
+    echo "darwin asset is ad-hoc signed: $asset" >&2
+    rm -rf "$work"
+    exit 2
+  fi
+  if grep -q "TeamIdentifier=not set" <<<"$details"; then
+    echo "darwin asset has no TeamIdentifier: $asset" >&2
+    rm -rf "$work"
+    exit 2
+  fi
+
+  rm -rf "$work"
+}
 
 if [[ "$darwin_amd64_formula" != "$darwin_amd64_expected" ]]; then
   echo "formula sha mismatch (darwin_amd64): $darwin_amd64_formula (expected $darwin_amd64_expected)" >&2
@@ -114,9 +154,17 @@ if [[ "$linux_arm64_formula" != "$linux_arm64_expected" ]]; then
   exit 2
 fi
 
+gh release download "v$version" \
+  -p "gogcli_${version}_darwin_amd64.tar.gz" \
+  -p "gogcli_${version}_darwin_arm64.tar.gz" \
+  -D "$tmp_assets_dir" >/dev/null
+
+verify_darwin_asset_signature "gogcli_${version}_darwin_amd64.tar.gz"
+verify_darwin_asset_signature "gogcli_${version}_darwin_arm64.tar.gz"
+
 brew update >/dev/null
-brew upgrade gogcli || brew install steipete/tap/gogcli
-brew test steipete/tap/gogcli
+brew upgrade "$tap_name/gogcli" || brew install "$tap_name/gogcli"
+brew test "$tap_name/gogcli"
 gog --version
 
 rm -rf "$tmp_assets_dir"

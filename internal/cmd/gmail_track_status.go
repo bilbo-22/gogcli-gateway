@@ -4,7 +4,7 @@ import (
 	"context"
 	"strings"
 
-	"github.com/steipete/gogcli/internal/tracking"
+	"github.com/steipete/gogcli/internal/outfmt"
 	"github.com/steipete/gogcli/internal/ui"
 )
 
@@ -12,34 +12,54 @@ type GmailTrackStatusCmd struct{}
 
 func (c *GmailTrackStatusCmd) Run(ctx context.Context, flags *RootFlags) error {
 	u := ui.FromContext(ctx)
-	account, cfg, err := loadTrackingConfigForAccount(flags)
+	account, cfg, configStore, _, err := loadTrackingConfigForAccount(ctx, flags)
 	if err != nil {
 		return err
 	}
 
-	path, _ := tracking.ConfigPath()
-	if path != "" {
-		u.Out().Printf("config_path\t%s", path)
+	path := configStore.Path()
+	if outfmt.IsJSON(ctx) {
+		payload := map[string]any{
+			"account":    account,
+			"configPath": path,
+			"configured": cfg.IsConfigured(),
+		}
+		if cfg.IsConfigured() {
+			payload["adminConfigured"] = strings.TrimSpace(cfg.AdminKey) != ""
+			payload["databaseId"] = cfg.DatabaseID
+			payload["databaseName"] = cfg.DatabaseName
+			payload["trackingKeyVersion"] = cfg.TrackingCurrentKeyVersion
+			payload["workerName"] = cfg.WorkerName
+			payload["workerUrl"] = cfg.WorkerURL
+		}
+		return outfmt.WriteJSON(ctx, stdoutWriter(ctx), payload)
 	}
-	u.Out().Printf("account\t%s", account)
+
+	if path != "" {
+		u.Out().Linef("config_path\t%s", path)
+	}
+	u.Out().Linef("account\t%s", account)
 
 	if !cfg.IsConfigured() {
-		u.Out().Printf("configured\tfalse")
+		u.Out().Linef("configured\tfalse")
 		return nil
 	}
 
-	u.Out().Printf("configured\ttrue")
-	u.Out().Printf("worker_url\t%s", cfg.WorkerURL)
+	u.Out().Linef("configured\ttrue")
+	u.Out().Linef("worker_url\t%s", cfg.WorkerURL)
 	if strings.TrimSpace(cfg.WorkerName) != "" {
-		u.Out().Printf("worker_name\t%s", cfg.WorkerName)
+		u.Out().Linef("worker_name\t%s", cfg.WorkerName)
 	}
 	if strings.TrimSpace(cfg.DatabaseName) != "" {
-		u.Out().Printf("database_name\t%s", cfg.DatabaseName)
+		u.Out().Linef("database_name\t%s", cfg.DatabaseName)
 	}
 	if strings.TrimSpace(cfg.DatabaseID) != "" {
-		u.Out().Printf("database_id\t%s", cfg.DatabaseID)
+		u.Out().Linef("database_id\t%s", cfg.DatabaseID)
 	}
-	u.Out().Printf("admin_configured\t%t", strings.TrimSpace(cfg.AdminKey) != "")
+	if cfg.TrackingCurrentKeyVersion > 0 {
+		u.Out().Linef("tracking_key_version\t%d", cfg.TrackingCurrentKeyVersion)
+	}
+	u.Out().Linef("admin_configured\t%t", strings.TrimSpace(cfg.AdminKey) != "")
 
 	return nil
 }

@@ -5,11 +5,7 @@ import (
 	"os"
 	"strings"
 
-	"golang.org/x/term"
-
-	"github.com/steipete/gogcli/internal/config"
 	"github.com/steipete/gogcli/internal/outfmt"
-	"github.com/steipete/gogcli/internal/secrets"
 	"github.com/steipete/gogcli/internal/ui"
 )
 
@@ -34,14 +30,18 @@ func (c *AuthKeyringCmd) Run(ctx context.Context, flags *RootFlags) error {
 
 	// No args: show current config.
 	if backend == "" {
-		path, _ := config.ConfigPath()
-		info, err := secrets.ResolveKeyringBackendInfo()
+		store, err := commandConfigStore(ctx)
+		if err != nil {
+			return err
+		}
+		path := store.Path()
+		info, err := resolveKeyringBackendInfo(ctx)
 		if err != nil {
 			return err
 		}
 
 		if outfmt.IsJSON(ctx) {
-			return outfmt.WriteJSON(ctx, os.Stdout, map[string]any{
+			return outfmt.WriteJSON(ctx, stdoutWriter(ctx), map[string]any{
 				"keyring_backend": info.Value,
 				"source":          info.Source,
 				"path":            path,
@@ -51,9 +51,9 @@ func (c *AuthKeyringCmd) Run(ctx context.Context, flags *RootFlags) error {
 		if u == nil {
 			return nil
 		}
-		u.Out().Printf("path\t%s", path)
-		u.Out().Printf("keyring_backend\t%s", info.Value)
-		u.Out().Printf("source\t%s", info.Source)
+		u.Out().Linef("path\t%s", path)
+		u.Out().Linef("keyring_backend\t%s", info.Value)
+		u.Out().Linef("source\t%s", info.Source)
 		u.Err().Println("Hint: gog auth keyring <auto|keychain|file>")
 		return nil
 	}
@@ -62,33 +62,37 @@ func (c *AuthKeyringCmd) Run(ctx context.Context, flags *RootFlags) error {
 		return usagef("too many args: %q %q", c.Backend, c.Backend2)
 	}
 
-	if backend == "default" {
-		backend = "auto"
+	if backend == literalDefault {
+		backend = literalAuto
 	}
 
 	allowed := map[string]struct{}{
-		"auto":     {},
-		"keychain": {},
-		strFile:    {},
+		literalAuto: {},
+		"keychain":  {},
+		strFile:     {},
 	}
 	if _, ok := allowed[backend]; !ok {
 		return usagef("invalid backend: %q (expected auto, keychain, or file)", c.Backend)
 	}
 
-	path, _ := config.ConfigPath()
-	if err := dryRunExit(ctx, flags, "auth.keyring.set", map[string]any{
-		"path":            path,
-		"keyring_backend": backend,
-	}); err != nil {
+	store, err := commandConfigStore(ctx)
+	if err != nil {
 		return err
 	}
+	path := store.Path()
+	if dryRunErr := dryRunExit(ctx, flags, "auth.keyring.set", map[string]any{
+		"path":            path,
+		"keyring_backend": backend,
+	}); dryRunErr != nil {
+		return dryRunErr
+	}
 
-	cfg, err := config.ReadConfig()
+	cfg, err := store.Read()
 	if err != nil {
 		return err
 	}
 	cfg.KeyringBackend = backend
-	if err := config.WriteConfig(cfg); err != nil {
+	if err := store.Write(cfg); err != nil {
 		return err
 	}
 
@@ -97,7 +101,7 @@ func (c *AuthKeyringCmd) Run(ctx context.Context, flags *RootFlags) error {
 		u != nil &&
 		!outfmt.IsJSON(ctx) &&
 		!outfmt.IsPlain(ctx) {
-		u.Err().Printf("NOTE: GOG_KEYRING_BACKEND=%s overrides config.json", v)
+		u.Err().Linef("NOTE: GOG_KEYRING_BACKEND=%s overrides config.json", v)
 	}
 
 	if backend == strFile &&
@@ -106,15 +110,15 @@ func (c *AuthKeyringCmd) Run(ctx context.Context, flags *RootFlags) error {
 		!outfmt.IsPlain(ctx) {
 		if v := strings.TrimSpace(os.Getenv(keyringPasswordEnv)); v != "" {
 			u.Err().Println("GOG_KEYRING_PASSWORD found in environment.")
-		} else if !term.IsTerminal(int(os.Stdin.Fd())) {
-			u.Err().Printf("NOTE: file keyring backend in non-interactive context requires %s", keyringPasswordEnv)
+		} else if !stdinIsTerminal(ctx) {
+			u.Err().Linef("NOTE: file keyring backend in non-interactive context requires %s", keyringPasswordEnv)
 		} else {
-			u.Err().Printf("Hint: set %s for non-interactive use (CI/ssh)", keyringPasswordEnv)
+			u.Err().Linef("Hint: set %s for non-interactive use (CI/ssh)", keyringPasswordEnv)
 		}
 	}
 
 	if outfmt.IsJSON(ctx) {
-		return outfmt.WriteJSON(ctx, os.Stdout, map[string]any{
+		return outfmt.WriteJSON(ctx, stdoutWriter(ctx), map[string]any{
 			"written":         true,
 			"path":            path,
 			"keyring_backend": backend,
@@ -125,8 +129,8 @@ func (c *AuthKeyringCmd) Run(ctx context.Context, flags *RootFlags) error {
 		return nil
 	}
 
-	u.Out().Printf("written\ttrue")
-	u.Out().Printf("path\t%s", path)
-	u.Out().Printf("keyring_backend\t%s", backend)
+	u.Out().Linef("written\ttrue")
+	u.Out().Linef("path\t%s", path)
+	u.Out().Linef("keyring_backend\t%s", backend)
 	return nil
 }

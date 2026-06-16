@@ -134,7 +134,7 @@ func TestWriteSendResults_TextMultiple(t *testing.T) {
 		if err := writeSendResults(ctx, u, "from@example.com", []sendResult{
 			{MessageID: "m1", ThreadID: "t1", TrackingID: "trk1", To: "a@example.com"},
 			{MessageID: "m2", ThreadID: "t2", TrackingID: "trk2", To: "b@example.com"},
-		}); err != nil {
+		}, nil); err != nil {
 			t.Fatalf("writeSendResults: %v", err)
 		}
 	})

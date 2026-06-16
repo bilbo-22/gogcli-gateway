@@ -3,85 +3,31 @@ package googleapi
 import (
 	"context"
 	"crypto/tls"
-	"errors"
 	"fmt"
 	"log/slog"
 	"net/http"
 	"time"
 
-	"github.com/99designs/keyring"
 	"golang.org/x/oauth2"
-	"golang.org/x/oauth2/google"
 	"google.golang.org/api/option"
 
 	"github.com/steipete/gogcli/internal/authclient"
-	"github.com/steipete/gogcli/internal/config"
 	"github.com/steipete/gogcli/internal/googleauth"
-	"github.com/steipete/gogcli/internal/secrets"
 )
 
-const defaultHTTPTimeout = 30 * time.Second
+const (
+	// responseHeaderTimeout limits the time waiting for the server to begin
+	// responding (send response headers). Once headers arrive and the body
+	// starts streaming, there is no hard cap — large file downloads are not
+	// cut short. This replaces the former http.Client.Timeout which applied
+	// to the entire request lifecycle and caused timeouts on large Drive
+	// file downloads.
+	responseHeaderTimeout = 30 * time.Second
 
-var (
-	readClientCredentials = config.ReadClientCredentialsFor
-	openSecretsStore      = secrets.OpenDefault
+	// tokenExchangeTimeout is applied to the short-lived HTTP client used
+	// for OAuth2 token refresh exchanges, which should always be fast.
+	tokenExchangeTimeout = 30 * time.Second
 )
-
-func tokenSourceForAccount(ctx context.Context, service googleauth.Service, email string) (oauth2.TokenSource, error) {
-	client, err := authclient.ResolveClient(ctx, email)
-	if err != nil {
-		return nil, fmt.Errorf("resolve client: %w", err)
-	}
-
-	creds, err := readClientCredentials(client)
-	if err != nil {
-		return nil, fmt.Errorf("read credentials: %w", err)
-	}
-
-	var requiredScopes []string
-
-	if scopes, err := googleauth.Scopes(service); err != nil {
-		return nil, fmt.Errorf("resolve scopes: %w", err)
-	} else {
-		requiredScopes = scopes
-	}
-
-	return tokenSourceForAccountScopes(ctx, string(service), email, client, creds.ClientID, creds.ClientSecret, requiredScopes)
-}
-
-func tokenSourceForAccountScopes(ctx context.Context, serviceLabel string, email string, client string, clientID string, clientSecret string, requiredScopes []string) (oauth2.TokenSource, error) {
-	var store secrets.Store
-
-	if s, err := openSecretsStore(); err != nil {
-		return nil, fmt.Errorf("open secrets store: %w", err)
-	} else {
-		store = s
-	}
-
-	var tok secrets.Token
-
-	if t, err := store.GetToken(client, email); err != nil {
-		if errors.Is(err, keyring.ErrKeyNotFound) {
-			return nil, &AuthRequiredError{Service: serviceLabel, Email: email, Client: client, Cause: err}
-		}
-
-		return nil, fmt.Errorf("get token for %s: %w", email, err)
-	} else {
-		tok = t
-	}
-
-	cfg := oauth2.Config{
-		ClientID:     clientID,
-		ClientSecret: clientSecret,
-		Endpoint:     google.Endpoint,
-		Scopes:       requiredScopes,
-	}
-
-	// Ensure refresh-token exchanges don't hang forever.
-	ctx = context.WithValue(ctx, oauth2.HTTPClient, &http.Client{Timeout: defaultHTTPTimeout})
-
-	return cfg.TokenSource(ctx, &oauth2.Token{RefreshToken: tok.RefreshToken}), nil
-}
 
 func optionsForAccount(ctx context.Context, service googleauth.Service, email string) ([]option.ClientOption, error) {
 	scopes, err := googleauth.Scopes(service)
@@ -92,62 +38,235 @@ func optionsForAccount(ctx context.Context, service googleauth.Service, email st
 	return optionsForAccountScopes(ctx, string(service), email, scopes)
 }
 
-func optionsForAccountScopes(ctx context.Context, serviceLabel string, email string, scopes []string) ([]option.ClientOption, error) {
-	slog.Debug("creating client options with custom scopes", "serviceLabel", serviceLabel, "email", email)
+type googleServiceFactory[T any] func(context.Context, ...option.ClientOption) (*T, error)
 
+func newGoogleServiceForAccount[T any](
+	ctx context.Context,
+	email string,
+	service googleauth.Service,
+	label string,
+	factory googleServiceFactory[T],
+) (*T, error) {
+	opts, err := optionsForAccount(ctx, service, email)
+	if err != nil {
+		return nil, fmt.Errorf("%s options: %w", label, err)
+	}
+
+	return newGoogleService(ctx, label, opts, factory)
+}
+
+func newGoogleServiceForScopes[T any](
+	ctx context.Context,
+	email string,
+	serviceLabel string,
+	errorLabel string,
+	scopes []string,
+	factory googleServiceFactory[T],
+) (*T, error) {
+	opts, err := optionsForAccountScopes(ctx, serviceLabel, email, scopes)
+	if err != nil {
+		return nil, fmt.Errorf("%s options: %w", errorLabel, err)
+	}
+
+	return newGoogleService(ctx, errorLabel, opts, factory)
+}
+
+func newGoogleServiceForRequiredScopes[T any](
+	ctx context.Context,
+	email string,
+	serviceLabel string,
+	errorLabel string,
+	scopes []string,
+	factory googleServiceFactory[T],
+) (*T, error) {
+	opts, err := optionsForAccountScopesRequiringStoredGrant(ctx, serviceLabel, email, scopes)
+	if err != nil {
+		return nil, fmt.Errorf("%s options: %w", errorLabel, err)
+	}
+
+	return newGoogleService(ctx, errorLabel, opts, factory)
+}
+
+func newGoogleServiceForServiceAccountScopes[T any](
+	ctx context.Context,
+	email string,
+	serviceLabel string,
+	errorLabel string,
+	scopes []string,
+	factory googleServiceFactory[T],
+) (*T, error) {
+	opts, err := optionsForServiceAccountScopes(ctx, serviceLabel, email, scopes)
+	if err != nil {
+		return nil, fmt.Errorf("%s options: %w", errorLabel, err)
+	}
+
+	return newGoogleService(ctx, errorLabel, opts, factory)
+}
+
+func newGoogleService[T any](
+	ctx context.Context,
+	label string,
+	opts []option.ClientOption,
+	factory googleServiceFactory[T],
+) (*T, error) {
+	svc, err := factory(ctx, opts...)
+	if err != nil {
+		return nil, fmt.Errorf("create %s service: %w", label, err)
+	}
+
+	return svc, nil
+}
+
+func authenticatedTransport(ctx context.Context, serviceLabel string, email string, scopes []string) (http.RoundTripper, error) {
+	return authenticatedTransportWithStoredScopeCheck(ctx, serviceLabel, email, scopes, false)
+}
+
+func authenticatedTransportWithStoredScopeCheck(
+	ctx context.Context,
+	serviceLabel string,
+	email string,
+	scopes []string,
+	requireStoredGrant bool,
+) (http.RoundTripper, error) {
 	if webhookURL := gatewayWebhookURL(); webhookURL != "" {
 		slog.Debug("gateway mode active, routing via webhook",
 			"serviceLabel", serviceLabel,
 			"email", email,
 			"webhook", webhookURL)
-		c := &http.Client{
-			Transport: NewRetryTransport(NewWebhookTransport(webhookURL)),
-			Timeout:   defaultHTTPTimeout,
-		}
-		return []option.ClientOption{option.WithHTTPClient(c)}, nil
+		return NewRetryTransport(NewWebhookTransport(webhookURL)), nil
 	}
-
-	var creds config.ClientCredentials
 
 	var ts oauth2.TokenSource
 
-	if serviceAccountTS, saPath, ok, err := tokenSourceForServiceAccountScopes(ctx, email, scopes); err != nil {
-		return nil, fmt.Errorf("service account token source: %w", err)
-	} else if ok {
-		slog.Debug("using service account credentials", "email", email, "path", saPath)
-		ts = serviceAccountTS
-	} else {
-		client, err := authclient.ResolveClient(ctx, email)
+	if dependencies, ok := authDependenciesFromContext(ctx); ok && dependencies.Mode == AuthModeADC {
+		slog.Debug("using Application Default Credentials (GOG_AUTH_MODE=adc)", "serviceLabel", serviceLabel)
+
+		adcTS, err := dependencies.adcTokenSource(ctx, scopes)
 		if err != nil {
-			return nil, fmt.Errorf("resolve client: %w", err)
+			return nil, err
 		}
 
-		if c, err := readClientCredentials(client); err != nil {
-			return nil, fmt.Errorf("read credentials: %w", err)
-		} else {
-			creds = c
-		}
+		ts = adcTS
+	} else {
+		var err error
 
-		if tokenSource, err := tokenSourceForAccountScopes(ctx, serviceLabel, email, client, creds.ClientID, creds.ClientSecret, scopes); err != nil {
-			return nil, fmt.Errorf("token source: %w", err)
-		} else {
-			ts = tokenSource
+		ts, err = tokenSourceForAvailableAccountAuthWithStoredScopeCheck(ctx, serviceLabel, email, scopes, requireStoredGrant)
+		if err != nil {
+			return nil, err
 		}
 	}
-	baseTransport := newBaseTransport()
-	// Wrap with retry logic for 429 and 5xx errors
-	retryTransport := NewRetryTransport(&oauth2.Transport{
+
+	return NewRetryTransport(&oauth2.Transport{
 		Source: ts,
-		Base:   baseTransport,
-	})
+		Base:   newBaseTransport(),
+	}), nil
+}
+
+func optionsForAccountScopes(ctx context.Context, serviceLabel string, email string, scopes []string) ([]option.ClientOption, error) {
+	return optionsForAccountScopesWithStoredScopeCheck(ctx, serviceLabel, email, scopes, false)
+}
+
+func optionsForAccountScopesRequiringStoredGrant(ctx context.Context, serviceLabel string, email string, scopes []string) ([]option.ClientOption, error) {
+	return optionsForAccountScopesWithStoredScopeCheck(ctx, serviceLabel, email, scopes, true)
+}
+
+func optionsForServiceAccountScopes(ctx context.Context, serviceLabel string, email string, scopes []string) ([]option.ClientOption, error) {
+	if webhookURL := gatewayWebhookURL(); webhookURL != "" {
+		slog.Debug("gateway mode active, routing service account request via webhook",
+			"serviceLabel", serviceLabel,
+			"email", email,
+			"webhook", webhookURL)
+		return []option.ClientOption{option.WithHTTPClient(&http.Client{
+			Transport: NewRetryTransport(NewWebhookTransport(webhookURL)),
+		})}, nil
+	}
+
+	if dependencies, ok := authDependenciesFromContext(ctx); ok && dependencies.Mode == AuthModeADC {
+		slog.Debug("using Application Default Credentials (GOG_AUTH_MODE=adc)", "serviceLabel", serviceLabel)
+
+		ts, err := dependencies.adcTokenSource(ctx, scopes)
+		if err != nil {
+			return nil, err
+		}
+
+		return tokenSourceClientOptions(ts), nil
+	}
+
+	if accessToken := authclient.AccessTokenFromContext(ctx); accessToken != "" {
+		slog.Debug("using direct access token", "serviceLabel", serviceLabel)
+
+		return tokenSourceClientOptions(oauth2.StaticTokenSource(&oauth2.Token{AccessToken: accessToken})), nil
+	}
+
+	dependencies, err := requireAuthDependencies(ctx)
+	if err != nil {
+		return nil, err
+	}
+
+	ts, path, ok, err := tokenSourceForServiceAccountScopes(ctx, dependencies, serviceLabel, email, scopes)
+	if err != nil {
+		return nil, fmt.Errorf("service account token source: %w", err)
+	}
+
+	if !ok {
+		return nil, &AuthRequiredError{Service: serviceLabel, Email: email}
+	}
+
+	slog.Debug("using required service account credentials", "email", email, "path", path)
+
+	return tokenSourceClientOptions(ts), nil
+}
+
+func tokenSourceClientOptions(ts oauth2.TokenSource) []option.ClientOption {
+	return []option.ClientOption{option.WithHTTPClient(&http.Client{
+		Transport: NewRetryTransport(&oauth2.Transport{
+			Source: ts,
+			Base:   newBaseTransport(),
+		}),
+	})}
+}
+
+func optionsForAccountScopesWithStoredScopeCheck(
+	ctx context.Context,
+	serviceLabel string,
+	email string,
+	scopes []string,
+	requireStoredGrant bool,
+) ([]option.ClientOption, error) {
+	slog.Debug("creating client options with custom scopes", "serviceLabel", serviceLabel, "email", email)
+
+	transport, err := authenticatedTransportWithStoredScopeCheck(ctx, serviceLabel, email, scopes, requireStoredGrant)
+	if err != nil {
+		return nil, err
+	}
+
 	c := &http.Client{
-		Transport: retryTransport,
-		Timeout:   defaultHTTPTimeout,
+		Transport: transport,
+		// No Timeout set: large file downloads (Drive videos, etc.) must not
+		// be cut short. Server responsiveness is guarded by the transport's
+		// ResponseHeaderTimeout instead.
 	}
 
 	slog.Debug("client options with custom scopes created successfully", "serviceLabel", serviceLabel, "email", email)
 
 	return []option.ClientOption{option.WithHTTPClient(c)}, nil
+}
+
+// NewHTTPClient returns a raw *http.Client authenticated for the given service
+// and account. The caller may set CheckRedirect or other policies on the
+// returned client.
+func NewHTTPClient(ctx context.Context, service googleauth.Service, email string) (*http.Client, error) {
+	scopes, err := googleauth.Scopes(service)
+	if err != nil {
+		return nil, fmt.Errorf("resolve scopes: %w", err)
+	}
+
+	transport, err := authenticatedTransport(ctx, string(service), email, scopes)
+	if err != nil {
+		return nil, err
+	}
+
+	return &http.Client{Transport: transport}, nil
 }
 
 func newBaseTransport() *http.Transport {
@@ -158,11 +277,14 @@ func newBaseTransport() *http.Transport {
 			TLSClientConfig: &tls.Config{
 				MinVersion: tls.VersionTLS12,
 			},
+			ResponseHeaderTimeout: responseHeaderTimeout,
 		}
 	}
 
 	// Clone() deep-copies TLSClientConfig, so no additional clone needed.
 	transport := defaultTransport.Clone()
+	transport.ResponseHeaderTimeout = responseHeaderTimeout
+
 	if transport.TLSClientConfig == nil {
 		transport.TLSClientConfig = &tls.Config{MinVersion: tls.VersionTLS12}
 		return transport

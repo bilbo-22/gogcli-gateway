@@ -3,6 +3,7 @@ package cmd
 import (
 	"context"
 	"io"
+	"strings"
 	"testing"
 
 	"github.com/alecthomas/kong"
@@ -38,6 +39,9 @@ func TestContactsValidationErrors(t *testing.T) {
 	if err := (&ContactsCreateCmd{}).Run(ctx, flags); err == nil {
 		t.Fatalf("expected create missing given")
 	}
+	if err := (&ContactsCreateCmd{Given: "Ada", Email: "nope"}).Run(ctx, &RootFlags{Account: "a@b.com", DryRun: true}); err == nil || !strings.Contains(err.Error(), "invalid --email") {
+		t.Fatalf("expected create invalid email, got %v", err)
+	}
 
 	{
 		cmd := &ContactsUpdateCmd{}
@@ -45,6 +49,13 @@ func TestContactsValidationErrors(t *testing.T) {
 		cmd.ResourceName = "nope"
 		if err := cmd.Run(ctx, kctx, flags); err == nil {
 			t.Fatalf("expected update invalid resourceName")
+		}
+	}
+	{
+		cmd := &ContactsUpdateCmd{}
+		kctx := parseContactsKong(t, cmd, []string{"people/123", "--email", "nope"})
+		if err := cmd.Run(ctx, kctx, &RootFlags{Account: "a@b.com", DryRun: true}); err == nil || !strings.Contains(err.Error(), "invalid --email") {
+			t.Fatalf("expected update invalid email, got %v", err)
 		}
 	}
 

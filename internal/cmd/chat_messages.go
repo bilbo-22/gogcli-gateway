@@ -3,7 +3,6 @@ package cmd
 import (
 	"context"
 	"fmt"
-	"os"
 	"strings"
 
 	"google.golang.org/api/chat/v1"
@@ -13,8 +12,10 @@ import (
 )
 
 type ChatMessagesCmd struct {
-	List ChatMessagesListCmd `cmd:"" name:"list" aliases:"ls" help:"List messages"`
-	Send ChatMessagesSendCmd `cmd:"" name:"send" aliases:"create,post" help:"Send a message"`
+	List      ChatMessagesListCmd      `cmd:"" name:"list" aliases:"ls" help:"List messages"`
+	Send      ChatMessagesSendCmd      `cmd:"" name:"send" aliases:"create,post" help:"Send a message"`
+	React     ChatMessagesReactCmd     `cmd:"" name:"react" help:"Add an emoji reaction to a message"`
+	Reactions ChatMessagesReactionsCmd `cmd:"" name:"reactions" aliases:"reaction" help:"Manage emoji reactions on a message"`
 }
 
 type ChatMessagesListCmd struct {
@@ -30,6 +31,13 @@ type ChatMessagesListCmd struct {
 
 func (c *ChatMessagesListCmd) Run(ctx context.Context, flags *RootFlags) error {
 	u := ui.FromContext(ctx)
+	space, err := normalizeSpace(c.Space)
+	if err != nil {
+		return usage("required: space")
+	}
+	if c.Max <= 0 {
+		return usage("max must be > 0")
+	}
 	account, err := requireAccount(flags)
 	if err != nil {
 		return err
@@ -38,12 +46,7 @@ func (c *ChatMessagesListCmd) Run(ctx context.Context, flags *RootFlags) error {
 		return err
 	}
 
-	space, err := normalizeSpace(c.Space)
-	if err != nil {
-		return usage("required: space")
-	}
-
-	svc, err := newChatService(ctx, account)
+	svc, err := chatService(ctx, account)
 	if err != nil {
 		return err
 	}
@@ -81,27 +84,16 @@ func (c *ChatMessagesListCmd) Run(ctx context.Context, flags *RootFlags) error {
 		if filter != "" {
 			call = call.Filter(filter)
 		}
-		resp, err := call.Do()
-		if err != nil {
-			return nil, "", err
+		resp, callErr := call.Do()
+		if callErr != nil {
+			return nil, "", callErr
 		}
 		return resp.Messages, resp.NextPageToken, nil
 	}
 
-	var messages []*chat.Message
-	nextPageToken := ""
-	if c.All {
-		all, err := collectAllPages(c.Page, fetch)
-		if err != nil {
-			return err
-		}
-		messages = all
-	} else {
-		var err error
-		messages, nextPageToken, err = fetch(c.Page)
-		if err != nil {
-			return err
-		}
+	messages, nextPageToken, err := loadPagedItems(c.Page, c.All, fetch)
+	if err != nil {
+		return err
 	}
 
 	if outfmt.IsJSON(ctx) {
@@ -125,7 +117,7 @@ func (c *ChatMessagesListCmd) Run(ctx context.Context, flags *RootFlags) error {
 				Thread:     chatMessageThread(msg),
 			})
 		}
-		if err := outfmt.WriteJSON(ctx, os.Stdout, map[string]any{
+		if err := outfmt.WriteJSON(ctx, stdoutWriter(ctx), map[string]any{
 			"messages":      items,
 			"nextPageToken": nextPageToken,
 		}); err != nil {
@@ -142,61 +134,38 @@ func (c *ChatMessagesListCmd) Run(ctx context.Context, flags *RootFlags) error {
 		return failEmptyExit(c.FailEmpty)
 	}
 
-	w, flush := tableWriter(ctx)
-	defer flush()
-	fmt.Fprintln(w, "RESOURCE\tSENDER\tTIME\tTEXT")
-	for _, msg := range messages {
-		if msg == nil {
-			continue
-		}
-		fmt.Fprintf(w, "%s\t%s\t%s\t%s\n",
-			msg.Name,
-			sanitizeTab(chatMessageSender(msg)),
-			sanitizeTab(msg.CreateTime),
-			sanitizeChatText(chatMessageText(msg)),
-		)
+	if err := outfmt.WriteTable(
+		ctx,
+		stdoutWriter(ctx),
+		compactChatRows(messages),
+		chatMessageColumns(),
+	); err != nil {
+		return err
 	}
-	printNextPageHint(u, nextPageToken)
+	printNextPageHintWithAll(u, nextPageToken, "--all/--all-pages")
 	return nil
 }
 
 type ChatMessagesSendCmd struct {
-	Space  string `arg:"" name:"space" help:"Space name (spaces/...)"`
-	Text   string `name:"text" help:"Message text (required)"`
-	Thread string `name:"thread" help:"Reply to thread (spaces/.../threads/...)"`
+	Space  string   `arg:"" name:"space" help:"Space name (spaces/...)"`
+	Text   string   `name:"text" help:"Message text (required unless --attach is provided)"`
+	Thread string   `name:"thread" help:"Reply to thread (spaces/.../threads/...)"`
+	Attach []string `name:"attach" help:"Attachment file path, e.g. an image (repeatable)"`
 }
 
 func (c *ChatMessagesSendCmd) Run(ctx context.Context, flags *RootFlags) error {
 	u := ui.FromContext(ctx)
-	space, err := normalizeSpace(c.Space)
+	plan, err := newChatMessageSendPlan(chatMessageSendInput{
+		Space:       c.Space,
+		Text:        c.Text,
+		Thread:      c.Thread,
+		Attachments: c.Attach,
+	})
 	if err != nil {
-		return usage("required: space")
+		return err
 	}
 
-	text := strings.TrimSpace(c.Text)
-	if text == "" {
-		return usage("required: --text")
-	}
-
-	message := &chat.Message{Text: text}
-	thread := strings.TrimSpace(c.Thread)
-	threadName := ""
-	if thread != "" {
-		tn, threadErr := normalizeThread(space, thread)
-		if threadErr != nil {
-			return usage(fmt.Sprintf("invalid thread: %v", threadErr))
-		}
-		threadName = tn
-		message.Thread = &chat.Thread{Name: tn}
-	}
-
-	if dryRunErr := dryRunExit(ctx, flags, "chat.messages.send", map[string]any{
-		"space":                        space,
-		"text":                         text,
-		"thread":                       threadName,
-		"thread_raw":                   thread,
-		"reply_fallback_to_new_thread": thread != "",
-	}); dryRunErr != nil {
+	if dryRunErr := dryRunExit(ctx, flags, "chat.messages.send", plan.dryRunPayload()); dryRunErr != nil {
 		return dryRunErr
 	}
 
@@ -208,14 +177,23 @@ func (c *ChatMessagesSendCmd) Run(ctx context.Context, flags *RootFlags) error {
 		return err
 	}
 
-	svc, err := newChatService(ctx, account)
+	svc, err := chatService(ctx, account)
 	if err != nil {
 		return err
 	}
 
-	call := svc.Spaces.Messages.Create(space, message)
-	if thread != "" {
-		call = call.MessageReplyOption("REPLY_MESSAGE_FALLBACK_TO_NEW_THREAD")
+	var attachments []*chat.Attachment
+	if len(plan.Attachments) > 0 {
+		attachments, err = uploadChatAttachments(ctx, svc, plan.Space, plan.Attachments)
+		if err != nil {
+			return err
+		}
+	}
+	message := plan.message(attachments)
+
+	call := svc.Spaces.Messages.Create(plan.Space, message)
+	if replyOption := plan.replyOption(); replyOption != "" {
+		call = call.MessageReplyOption(replyOption)
 	}
 
 	resp, err := call.Do()
@@ -224,18 +202,18 @@ func (c *ChatMessagesSendCmd) Run(ctx context.Context, flags *RootFlags) error {
 	}
 
 	if outfmt.IsJSON(ctx) {
-		return outfmt.WriteJSON(ctx, os.Stdout, map[string]any{"message": resp})
+		return outfmt.WriteJSON(ctx, stdoutWriter(ctx), map[string]any{"message": resp})
 	}
 
 	if resp == nil {
-		u.Out().Printf("space\t%s", space)
+		u.Out().Linef("space\t%s", plan.Space)
 		return nil
 	}
 	if resp.Name != "" {
-		u.Out().Printf("resource\t%s", resp.Name)
+		u.Out().Linef("resource\t%s", resp.Name)
 	}
 	if resp.Thread != nil && resp.Thread.Name != "" {
-		u.Out().Printf("thread\t%s", resp.Thread.Name)
+		u.Out().Linef("thread\t%s", resp.Thread.Name)
 	}
 	return nil
 }

@@ -29,6 +29,12 @@ func TestDriveExportMimeTypeForFormat(t *testing.T) {
 			wantMime:   "application/pdf",
 		},
 		{
+			name:       "doc_auto",
+			googleMime: "application/vnd.google-apps.document",
+			format:     "auto",
+			wantMime:   "application/pdf",
+		},
+		{
 			name:       "doc_pdf",
 			googleMime: "application/vnd.google-apps.document",
 			format:     "pdf",
@@ -47,6 +53,18 @@ func TestDriveExportMimeTypeForFormat(t *testing.T) {
 			wantMime:   "text/plain",
 		},
 		{
+			name:       "doc_md",
+			googleMime: "application/vnd.google-apps.document",
+			format:     "md",
+			wantMime:   "text/markdown",
+		},
+		{
+			name:       "doc_html",
+			googleMime: "application/vnd.google-apps.document",
+			format:     "html",
+			wantMime:   "text/html",
+		},
+		{
 			name:        "doc_invalid",
 			googleMime:  "application/vnd.google-apps.document",
 			format:      "xlsx",
@@ -57,6 +75,12 @@ func TestDriveExportMimeTypeForFormat(t *testing.T) {
 			name:       "sheet_default",
 			googleMime: "application/vnd.google-apps.spreadsheet",
 			format:     "",
+			wantMime:   "text/csv",
+		},
+		{
+			name:       "sheet_auto",
+			googleMime: "application/vnd.google-apps.spreadsheet",
+			format:     "auto",
 			wantMime:   "text/csv",
 		},
 		{
@@ -181,11 +205,8 @@ func TestDriveExportMimeTypeForFormat(t *testing.T) {
 func TestDownloadDriveFile_InvalidExportFormat(t *testing.T) {
 	t.Parallel()
 
-	origExport := driveExportDownload
-	t.Cleanup(func() { driveExportDownload = origExport })
-
 	called := false
-	driveExportDownload = func(context.Context, *drive.Service, string, string) (*http.Response, error) {
+	export := func(context.Context, *drive.Service, string, string) (*http.Response, error) {
 		called = true
 		return &http.Response{
 			Status:     "200 OK",
@@ -195,7 +216,8 @@ func TestDownloadDriveFile_InvalidExportFormat(t *testing.T) {
 	}
 
 	dest := filepath.Join(t.TempDir(), "out")
-	_, _, err := downloadDriveFile(context.Background(), &drive.Service{}, &drive.File{
+	ctx := withDriveTestOperations(context.Background(), &drive.Service{}, nil, export)
+	_, _, err := downloadDriveFile(ctx, &drive.Service{}, &drive.File{
 		Id:       "id1",
 		MimeType: "application/vnd.google-apps.document",
 	}, dest, "xlsx")

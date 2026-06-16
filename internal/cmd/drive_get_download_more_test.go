@@ -16,13 +16,9 @@ import (
 	"google.golang.org/api/option"
 
 	"github.com/steipete/gogcli/internal/outfmt"
-	"github.com/steipete/gogcli/internal/ui"
 )
 
 func TestDriveGetCmd_TextWithDetailsAndJSON(t *testing.T) {
-	origNew := newDriveService
-	t.Cleanup(func() { newDriveService = origNew })
-
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodGet {
 			http.NotFound(w, r)
@@ -34,15 +30,17 @@ func TestDriveGetCmd_TextWithDetailsAndJSON(t *testing.T) {
 		}
 		w.Header().Set("Content-Type", "application/json")
 		_ = json.NewEncoder(w).Encode(map[string]any{
-			"id":           "file1",
-			"name":         "File",
-			"mimeType":     "text/plain",
-			"size":         "5",
-			"modifiedTime": "2025-12-12T14:37:47Z",
-			"createdTime":  "2025-12-11T00:00:00Z",
-			"description":  "desc",
-			"starred":      true,
-			"webViewLink":  "http://example.com/file",
+			"id":            "file1",
+			"name":          "File",
+			"mimeType":      "text/plain",
+			"size":          "5",
+			"modifiedTime":  "2025-12-12T14:37:47Z",
+			"createdTime":   "2025-12-11T00:00:00Z",
+			"description":   "desc",
+			"starred":       true,
+			"webViewLink":   "http://example.com/file",
+			"hasThumbnail":  true,
+			"thumbnailLink": "https://thumb.example/file",
 		})
 	}))
 	t.Cleanup(srv.Close)
@@ -55,16 +53,11 @@ func TestDriveGetCmd_TextWithDetailsAndJSON(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewService: %v", err)
 	}
-	newDriveService = func(context.Context, string) (*drive.Service, error) { return svc, nil }
 
 	flags := &RootFlags{Account: "a@b.com"}
 	var outBuf bytes.Buffer
 	var errBuf bytes.Buffer
-	u, uiErr := ui.New(ui.Options{Stdout: &outBuf, Stderr: &errBuf, Color: "never"})
-	if uiErr != nil {
-		t.Fatalf("ui.New: %v", uiErr)
-	}
-	ctx := ui.WithUI(context.Background(), u)
+	ctx := withDriveTestService(newCmdRuntimeOutputContext(t, &outBuf, &errBuf), svc)
 
 	cmd := &DriveGetCmd{}
 	if execErr := runKong(t, cmd, []string{"file1"}, ctx, flags); execErr != nil {
@@ -75,27 +68,28 @@ func TestDriveGetCmd_TextWithDetailsAndJSON(t *testing.T) {
 		t.Fatalf("missing details: %q", textOut)
 	}
 
-	jsonCtx := outfmt.WithMode(ctx, outfmt.Mode{JSON: true})
-	jsonOut := captureStdout(t, func() {
-		cmd := &DriveGetCmd{}
-		if execErr := runKong(t, cmd, []string{"file1"}, jsonCtx, flags); execErr != nil {
-			t.Fatalf("execute json: %v", execErr)
-		}
-	})
-	if !strings.Contains(jsonOut, "\"file\"") {
-		t.Fatalf("unexpected json: %q", jsonOut)
+	var jsonOut bytes.Buffer
+	jsonCtx := outfmt.WithMode(withDriveTestService(newCmdRuntimeOutputContext(t, &jsonOut, io.Discard), svc), outfmt.Mode{JSON: true})
+	cmd = &DriveGetCmd{}
+	if execErr := runKong(t, cmd, []string{"file1"}, jsonCtx, flags); execErr != nil {
+		t.Fatalf("execute json: %v", execErr)
+	}
+	if !strings.Contains(jsonOut.String(), "\"file\"") {
+		t.Fatalf("unexpected json: %q", jsonOut.String())
+	}
+	var parsed struct {
+		File *drive.File `json:"file"`
+	}
+	if err := json.Unmarshal(jsonOut.Bytes(), &parsed); err != nil {
+		t.Fatalf("unmarshal json: %v\n%s", err, jsonOut.String())
+	}
+	if parsed.File == nil || !parsed.File.HasThumbnail || parsed.File.ThumbnailLink != "https://thumb.example/file" {
+		t.Fatalf("missing thumbnail fields in json: %#v", parsed.File)
 	}
 }
 
 func TestDriveDownloadCmd_GoogleDoc_JSON(t *testing.T) {
-	origNew := newDriveService
-	origExport := driveExportDownload
-	t.Cleanup(func() {
-		newDriveService = origNew
-		driveExportDownload = origExport
-	})
-
-	driveExportDownload = func(context.Context, *drive.Service, string, string) (*http.Response, error) {
+	export := func(context.Context, *drive.Service, string, string) (*http.Response, error) {
 		return &http.Response{
 			StatusCode: http.StatusOK,
 			Body:       io.NopCloser(strings.NewReader("docdata")),
@@ -128,29 +122,22 @@ func TestDriveDownloadCmd_GoogleDoc_JSON(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewService: %v", err)
 	}
-	newDriveService = func(context.Context, string) (*drive.Service, error) { return svc, nil }
 
 	flags := &RootFlags{Account: "a@b.com"}
-	u, uiErr := ui.New(ui.Options{Stdout: io.Discard, Stderr: io.Discard, Color: "never"})
-	if uiErr != nil {
-		t.Fatalf("ui.New: %v", uiErr)
-	}
-	ctx := outfmt.WithMode(ui.WithUI(context.Background(), u), outfmt.Mode{JSON: true})
-
 	dest := filepath.Join(t.TempDir(), "out.bin")
-	out := captureStdout(t, func() {
-		cmd := &DriveDownloadCmd{}
-		if execErr := runKong(t, cmd, []string{"doc1", "--out", dest}, ctx, flags); execErr != nil {
-			t.Fatalf("download: %v", execErr)
-		}
-	})
-	if !strings.Contains(out, "\"path\"") || !strings.Contains(out, "\"size\"") {
-		t.Fatalf("unexpected json: %q", out)
+	var out bytes.Buffer
+	ctx := withDriveTestOperations(newCmdRuntimeJSONOutputContext(t, &out, io.Discard), svc, nil, export)
+	cmd := &DriveDownloadCmd{}
+	if execErr := runKong(t, cmd, []string{"doc1", "--out", dest}, ctx, flags); execErr != nil {
+		t.Fatalf("download: %v", execErr)
+	}
+	if !strings.Contains(out.String(), "\"path\"") || !strings.Contains(out.String(), "\"size\"") {
+		t.Fatalf("unexpected json: %q", out.String())
 	}
 	var payload struct {
 		Path string `json:"path"`
 	}
-	if err := json.Unmarshal([]byte(out), &payload); err != nil {
+	if err := json.Unmarshal(out.Bytes(), &payload); err != nil {
 		t.Fatalf("json parse: %v", err)
 	}
 	if payload.Path == "" {

@@ -73,6 +73,10 @@ func ParseDateTimeOrDate(value string, loc *time.Location) (ParsedDateTime, erro
 		return ParsedDateTime{Time: t, HasTime: true}, nil
 	}
 
+	if t, err := time.Parse("2006-01-02T15:04-0700", value); err == nil {
+		return ParsedDateTime{Time: t, HasTime: true}, nil
+	}
+
 	if t, err := time.ParseInLocation("2006-01-02", value, loc); err == nil {
 		return ParsedDateTime{Time: t, HasTime: false}, nil
 	}
@@ -101,18 +105,24 @@ func ParseRangeExpr(expr string, now time.Time, loc *time.Location) (time.Time, 
 	}
 
 	exprLower := strings.ToLower(expr)
+
+	relativeNow := now
+	if loc != nil {
+		relativeNow = now.In(loc)
+	}
+
 	switch exprLower {
 	case "now":
 		return now, nil
 	case "today":
-		return startOfDay(now), nil
+		return startOfDay(relativeNow), nil
 	case "tomorrow":
-		return startOfDay(now.AddDate(0, 0, 1)), nil
+		return startOfDay(relativeNow.AddDate(0, 0, 1)), nil
 	case "yesterday":
-		return startOfDay(now.AddDate(0, 0, -1)), nil
+		return startOfDay(relativeNow.AddDate(0, 0, -1)), nil
 	}
 
-	if t, ok := parseWeekday(exprLower, now); ok {
+	if t, ok := ParseWeekdayExpr(exprLower, relativeNow); ok {
 		return t, nil
 	}
 
@@ -157,7 +167,34 @@ func ParseSince(value string, now time.Time, loc *time.Location) (SinceResult, e
 	return SinceResult{}, fmt.Errorf("%w: %q", ErrInvalidSince, value)
 }
 
-func parseWeekday(expr string, now time.Time) (time.Time, bool) {
+var weekdayNames = map[string]time.Weekday{
+	"sunday":    time.Sunday,
+	"sun":       time.Sunday,
+	"monday":    time.Monday,
+	"mon":       time.Monday,
+	"tuesday":   time.Tuesday,
+	"tue":       time.Tuesday,
+	"tues":      time.Tuesday,
+	"wednesday": time.Wednesday,
+	"wed":       time.Wednesday,
+	"thursday":  time.Thursday,
+	"thu":       time.Thursday,
+	"thur":      time.Thursday,
+	"thurs":     time.Thursday,
+	"friday":    time.Friday,
+	"fri":       time.Friday,
+	"saturday":  time.Saturday,
+	"sat":       time.Saturday,
+}
+
+// ParseWeekdayName parses a weekday name or common alias.
+func ParseWeekdayName(value string) (time.Weekday, bool) {
+	wd, ok := weekdayNames[strings.ToLower(strings.TrimSpace(value))]
+	return wd, ok
+}
+
+// ParseWeekdayExpr parses weekday expressions like "monday" or "next tuesday".
+func ParseWeekdayExpr(expr string, now time.Time) (time.Time, bool) {
 	expr = strings.TrimSpace(expr)
 
 	next := false
@@ -166,24 +203,7 @@ func parseWeekday(expr string, now time.Time) (time.Time, bool) {
 		expr = strings.TrimPrefix(expr, "next ")
 	}
 
-	weekdays := map[string]time.Weekday{
-		"sunday":    time.Sunday,
-		"sun":       time.Sunday,
-		"monday":    time.Monday,
-		"mon":       time.Monday,
-		"tuesday":   time.Tuesday,
-		"tue":       time.Tuesday,
-		"wednesday": time.Wednesday,
-		"wed":       time.Wednesday,
-		"thursday":  time.Thursday,
-		"thu":       time.Thursday,
-		"friday":    time.Friday,
-		"fri":       time.Friday,
-		"saturday":  time.Saturday,
-		"sat":       time.Saturday,
-	}
-
-	targetDay, ok := weekdays[expr]
+	targetDay, ok := ParseWeekdayName(expr)
 	if !ok {
 		return time.Time{}, false
 	}

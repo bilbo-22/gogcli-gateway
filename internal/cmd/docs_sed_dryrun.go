@@ -3,8 +3,10 @@ package cmd
 import (
 	"context"
 	"fmt"
+	"math"
 	"strings"
 
+	"github.com/steipete/gogcli/internal/docssed"
 	"github.com/steipete/gogcli/internal/ui"
 )
 
@@ -43,14 +45,14 @@ func (c *DocsSedCmd) runDryRun(_ context.Context, u *ui.UI, exprs []sedExpr) err
 		}
 
 		if braceInfo != "" {
-			u.Out().Printf("%d\t%s\t%s\t%s/%s/%s/%s%s\t%s", i+1, kind, valid, prefix, expr.pattern, truncateSed(expr.replacement, 40), flag, nthStr, braceInfo)
+			u.Out().Linef("%d\t%s\t%s\t%s/%s/%s/%s%s\t%s", i+1, kind, valid, prefix, expr.pattern, truncateSed(expr.replacement, 40), flag, nthStr, braceInfo)
 		} else {
-			u.Out().Printf("%d\t%s\t%s\t%s/%s/%s/%s%s", i+1, kind, valid, prefix, expr.pattern, truncateSed(expr.replacement, 40), flag, nthStr)
+			u.Out().Linef("%d\t%s\t%s\t%s/%s/%s/%s%s", i+1, kind, valid, prefix, expr.pattern, truncateSed(expr.replacement, 40), flag, nthStr)
 		}
 	}
 
-	u.Out().Printf("---")
-	u.Out().Printf("dry-run: %d expressions parsed, no changes made", len(exprs))
+	u.Out().Linef("---")
+	u.Out().Linef("dry-run: %d expressions parsed, no changes made", len(exprs))
 	return nil
 }
 
@@ -74,6 +76,12 @@ func classifyExpression(expr sedExpr) string {
 		return kind
 	}
 	if expr.tableRef != 0 {
+		if expr.tableRef == math.MinInt32 {
+			if expr.replacement == "" {
+				return "delete all tables"
+			}
+			return "all tables op"
+		}
 		if expr.replacement == "" {
 			return fmt.Sprintf("delete table %d", expr.tableRef)
 		}
@@ -82,14 +90,14 @@ func classifyExpression(expr sedExpr) string {
 	if parseTableCreate(expr.replacement) != nil || parseTableFromPipes(expr.replacement) != nil {
 		return "create table"
 	}
-	if parseImageRefPattern(expr.pattern) != nil {
+	if docssed.ParseImageReference(expr.pattern) != nil {
 		return "image"
 	}
 	if expr.pattern == "^" || expr.pattern == "$" || expr.pattern == "^$" {
 		return "positional"
 	}
 	// Check for brace formatting
-	if expr.brace != nil && braceExprHasAnyFormat(expr.brace) {
+	if expr.brace != nil && docssed.BraceExpressionHasAnyFormat(expr.brace) {
 		return "brace"
 	}
 	if canUseNativeReplace(expr.replacement) && expr.global && expr.brace == nil {

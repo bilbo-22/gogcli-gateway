@@ -18,11 +18,17 @@ import (
 	"google.golang.org/api/option"
 )
 
-func TestDriveCommands_MoreCoverage(t *testing.T) {
-	origNew := newDriveService
-	t.Cleanup(func() { newDriveService = origNew })
+type fakeDriveCommands struct {
+	run         func(args ...string) string
+	uploadMetas func() []map[string]any
+	uploadMedia func() []string
+}
+
+func newFakeDriveCommands(t *testing.T) *fakeDriveCommands {
+	t.Helper()
 
 	uploadMetas := make([]map[string]any, 0, 4)
+	uploadMedia := make([]string, 0, 4)
 
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		path := strings.TrimPrefix(r.URL.Path, "/drive/v3")
@@ -33,6 +39,11 @@ func TestDriveCommands_MoreCoverage(t *testing.T) {
 		switch {
 		case r.Method == http.MethodGet && path == "/files":
 			q := r.URL.Query().Get("q")
+			if strings.Contains(q, "fullText contains") {
+				if got := r.URL.Query().Get("corpora"); got != "allDrives" {
+					t.Fatalf("expected corpora=allDrives, got: %q", r.URL.RawQuery)
+				}
+			}
 			if strings.Contains(q, "fullText contains") {
 				if errMsg := driveAllDrivesQueryError(r, true); errMsg != "" {
 					t.Fatalf("%s: %q", errMsg, r.URL.RawQuery)
@@ -102,12 +113,13 @@ func TestDriveCommands_MoreCoverage(t *testing.T) {
 			respName := "New"
 			respMimeType := "text/plain"
 			if isUpload {
-				meta, err := readUploadMetadata(r)
+				meta, media, err := readUploadRequest(r)
 				if err != nil {
 					http.Error(w, err.Error(), http.StatusBadRequest)
 					return
 				}
 				uploadMetas = append(uploadMetas, meta)
+				uploadMedia = append(uploadMedia, media)
 				if v, ok := meta["name"].(string); ok && strings.TrimSpace(v) != "" {
 					respName = v
 				}
@@ -200,7 +212,7 @@ func TestDriveCommands_MoreCoverage(t *testing.T) {
 			return
 		}
 	}))
-	defer srv.Close()
+	t.Cleanup(srv.Close)
 
 	svc, err := drive.NewService(context.Background(),
 		option.WithoutAuthentication(),
@@ -210,18 +222,26 @@ func TestDriveCommands_MoreCoverage(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewService: %v", err)
 	}
-	newDriveService = func(context.Context, string) (*drive.Service, error) { return svc, nil }
 
 	run := func(args ...string) string {
 		t.Helper()
-		return captureStdout(t, func() {
-			_ = captureStderr(t, func() {
-				if execErr := Execute(args); execErr != nil {
-					t.Fatalf("Execute %v: %v", args, execErr)
-				}
-			})
-		})
+		result := executeWithDriveTestService(t, args, svc)
+		if result.err != nil {
+			t.Fatalf("Execute %v: %v", args, result.err)
+		}
+		return result.stdout
 	}
+
+	return &fakeDriveCommands{
+		run:         run,
+		uploadMetas: func() []map[string]any { return uploadMetas },
+		uploadMedia: func() []string { return uploadMedia },
+	}
+}
+
+func TestDriveCommands_ListSearchGetCopy(t *testing.T) {
+	fake := newFakeDriveCommands(t)
+	run := fake.run
 
 	_ = run("--account", "a@b.com", "drive", "ls", "--query", "empty")
 	out := run("--json", "--account", "a@b.com", "drive", "ls")
@@ -244,16 +264,21 @@ func TestDriveCommands_MoreCoverage(t *testing.T) {
 	if !strings.Contains(out, "\"file\"") {
 		t.Fatalf("unexpected copy json: %q", out)
 	}
+}
+
+func TestDriveCommands_UploadVariants(t *testing.T) {
+	fake := newFakeDriveCommands(t)
+	run := fake.run
 
 	tmp := filepath.Join(t.TempDir(), "upload.txt")
 	if err := os.WriteFile(tmp, []byte("data"), 0o600); err != nil {
 		t.Fatalf("write temp: %v", err)
 	}
-	out = run("--json", "--account", "a@b.com", "drive", "upload", tmp)
+	out := run("--json", "--account", "a@b.com", "drive", "upload", tmp)
 	if !strings.Contains(out, "\"file\"") {
 		t.Fatalf("unexpected upload json: %q", out)
 	}
-	baseMeta := latestUploadMeta(t, uploadMetas)
+	baseMeta := latestUploadMeta(t, fake.uploadMetas())
 	if got := toString(baseMeta["name"]); got != "upload.txt" {
 		t.Fatalf("upload name = %q, want upload.txt", got)
 	}
@@ -269,7 +294,7 @@ func TestDriveCommands_MoreCoverage(t *testing.T) {
 	if !strings.Contains(out, "\"file\"") {
 		t.Fatalf("unexpected upload --convert json: %q", out)
 	}
-	convertMeta := latestUploadMeta(t, uploadMetas)
+	convertMeta := latestUploadMeta(t, fake.uploadMetas())
 	if got := toString(convertMeta["mimeType"]); got != driveMimeGoogleDoc {
 		t.Fatalf("upload --convert mimeType = %q, want %q", got, driveMimeGoogleDoc)
 	}
@@ -281,7 +306,7 @@ func TestDriveCommands_MoreCoverage(t *testing.T) {
 	if !strings.Contains(out, "\"file\"") {
 		t.Fatalf("unexpected upload --convert --name json: %q", out)
 	}
-	nameMeta := latestUploadMeta(t, uploadMetas)
+	nameMeta := latestUploadMeta(t, fake.uploadMetas())
 	if got := toString(nameMeta["name"]); got != "custom.docx" {
 		t.Fatalf("upload --convert --name kept name = %q, want custom.docx", got)
 	}
@@ -294,7 +319,7 @@ func TestDriveCommands_MoreCoverage(t *testing.T) {
 	if !strings.Contains(out, "\"file\"") {
 		t.Fatalf("unexpected upload --convert-to json: %q", out)
 	}
-	explicitMeta := latestUploadMeta(t, uploadMetas)
+	explicitMeta := latestUploadMeta(t, fake.uploadMetas())
 	if got := toString(explicitMeta["mimeType"]); got != driveMimeGoogleSheet {
 		t.Fatalf("upload --convert-to mimeType = %q, want %q", got, driveMimeGoogleSheet)
 	}
@@ -302,7 +327,45 @@ func TestDriveCommands_MoreCoverage(t *testing.T) {
 		t.Fatalf("upload --convert-to name = %q, want chart.png", got)
 	}
 
-	out = run("--account", "a@b.com", "drive", "mkdir", "Folder")
+	mdTmp := filepath.Join(t.TempDir(), "notes.md")
+	mdContent := "---\ntitle: Secret\n---\n\n# Public\n"
+	if err := os.WriteFile(mdTmp, []byte(mdContent), 0o600); err != nil {
+		t.Fatalf("write temp markdown: %v", err)
+	}
+	out = run("--json", "--account", "a@b.com", "drive", "upload", mdTmp, "--convert")
+	if !strings.Contains(out, "\"file\"") {
+		t.Fatalf("unexpected upload markdown --convert json: %q", out)
+	}
+	mdMeta := latestUploadMeta(t, fake.uploadMetas())
+	if got := toString(mdMeta["mimeType"]); got != driveMimeGoogleDoc {
+		t.Fatalf("upload markdown --convert mimeType = %q, want %q", got, driveMimeGoogleDoc)
+	}
+	if got := toString(mdMeta["name"]); got != "notes" {
+		t.Fatalf("upload markdown --convert name = %q, want notes", got)
+	}
+	mdMedia := latestUploadMedia(t, fake.uploadMedia())
+	if strings.Contains(mdMedia, "title: Secret") || strings.HasPrefix(mdMedia, "---") {
+		t.Fatalf("expected frontmatter stripped from markdown media, got %q", mdMedia)
+	}
+	if mdMedia != "\n# Public\n" {
+		t.Fatalf("markdown media = %q, want stripped body", mdMedia)
+	}
+
+	out = run("--json", "--account", "a@b.com", "drive", "upload", mdTmp, "--convert", "--keep-frontmatter")
+	if !strings.Contains(out, "\"file\"") {
+		t.Fatalf("unexpected upload markdown --keep-frontmatter json: %q", out)
+	}
+	keptMedia := latestUploadMedia(t, fake.uploadMedia())
+	if keptMedia != mdContent {
+		t.Fatalf("markdown media with --keep-frontmatter = %q, want %q", keptMedia, mdContent)
+	}
+}
+
+func TestDriveCommands_MutateShareAndPermissions(t *testing.T) {
+	fake := newFakeDriveCommands(t)
+	run := fake.run
+
+	out := run("--account", "a@b.com", "drive", "mkdir", "Folder")
 	if !strings.Contains(out, "id") {
 		t.Fatalf("unexpected mkdir output: %q", out)
 	}
@@ -350,42 +413,50 @@ func TestDriveCommands_MoreCoverage(t *testing.T) {
 	}
 }
 
-func readUploadMetadata(r *http.Request) (map[string]any, error) {
+func readUploadRequest(r *http.Request) (map[string]any, string, error) {
 	mediaType, params, err := mime.ParseMediaType(r.Header.Get("Content-Type"))
 	if err != nil {
-		return nil, fmt.Errorf("parse content-type: %w", err)
+		return nil, "", fmt.Errorf("parse content-type: %w", err)
 	}
 	if !strings.HasPrefix(mediaType, "multipart/") {
-		return nil, fmt.Errorf("unexpected content-type: %q", mediaType)
+		return nil, "", fmt.Errorf("unexpected content-type: %q", mediaType)
 	}
 	boundary := params["boundary"]
 	if boundary == "" {
-		return nil, fmt.Errorf("missing multipart boundary")
+		return nil, "", fmt.Errorf("missing multipart boundary")
 	}
 
 	reader := multipart.NewReader(r.Body, boundary)
+	var meta map[string]any
+	var media []byte
 	for {
 		part, partErr := reader.NextPart()
 		if partErr == io.EOF {
 			break
 		}
 		if partErr != nil {
-			return nil, fmt.Errorf("read multipart: %w", partErr)
+			return nil, "", fmt.Errorf("read multipart: %w", partErr)
 		}
 
 		contentType := part.Header.Get("Content-Type")
 		if !strings.HasPrefix(contentType, "application/json") {
+			body, readErr := io.ReadAll(part)
+			if readErr != nil {
+				return nil, "", fmt.Errorf("read media part: %w", readErr)
+			}
+			media = body
 			continue
 		}
 
-		var meta map[string]any
 		if err := json.NewDecoder(part).Decode(&meta); err != nil {
-			return nil, fmt.Errorf("decode metadata json: %w", err)
+			return nil, "", fmt.Errorf("decode metadata json: %w", err)
 		}
-		return meta, nil
 	}
 
-	return nil, fmt.Errorf("metadata part not found")
+	if meta == nil {
+		return nil, "", fmt.Errorf("metadata part not found")
+	}
+	return meta, string(media), nil
 }
 
 func latestUploadMeta(t *testing.T, uploadMetas []map[string]any) map[string]any {
@@ -394,6 +465,14 @@ func latestUploadMeta(t *testing.T, uploadMetas []map[string]any) map[string]any
 		t.Fatalf("expected at least one upload metadata entry")
 	}
 	return uploadMetas[len(uploadMetas)-1]
+}
+
+func latestUploadMedia(t *testing.T, uploadMedia []string) string {
+	t.Helper()
+	if len(uploadMedia) == 0 {
+		t.Fatalf("expected at least one upload media entry")
+	}
+	return uploadMedia[len(uploadMedia)-1]
 }
 
 func toString(v any) string {

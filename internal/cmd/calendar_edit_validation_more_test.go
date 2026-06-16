@@ -12,7 +12,6 @@ import (
 	"google.golang.org/api/calendar/v3"
 	"google.golang.org/api/option"
 
-	"github.com/steipete/gogcli/internal/outfmt"
 	"github.com/steipete/gogcli/internal/ui"
 )
 
@@ -22,6 +21,7 @@ func TestCalendarCreateCmd_ValidationErrors(t *testing.T) {
 		t.Fatalf("ui.New: %v", uiErr)
 	}
 	ctx := ui.WithUI(context.Background(), u)
+	ctx = withDefaultTestRuntime(ctx)
 	flags := &RootFlags{Account: "a@b.com"}
 
 	cases := []struct {
@@ -31,6 +31,8 @@ func TestCalendarCreateCmd_ValidationErrors(t *testing.T) {
 		{"missing calendar", CalendarCreateCmd{}},
 		{"missing summary", CalendarCreateCmd{CalendarID: "cal1", From: "2025-01-01T00:00:00Z", To: "2025-01-01T01:00:00Z"}},
 		{"invalid event type", CalendarCreateCmd{CalendarID: "cal1", Summary: "S", From: "2025-01-01T00:00:00Z", To: "2025-01-01T01:00:00Z", EventType: "nope"}},
+		{"out of office date only", CalendarCreateCmd{CalendarID: "cal1", EventType: "out-of-office", From: "2025-01-01", To: "2025-01-02"}},
+		{"out of office all day", CalendarCreateCmd{CalendarID: "cal1", EventType: "out-of-office", From: "2025-01-01T00:00:00Z", To: "2025-01-02T00:00:00Z", AllDay: true}},
 		{"working location missing type", CalendarCreateCmd{CalendarID: "cal1", EventType: "working-location", From: "2025-01-01", To: "2025-01-02"}},
 		{"working location with time", CalendarCreateCmd{CalendarID: "cal1", EventType: "working-location", From: "2025-01-01T00:00:00Z", To: "2025-01-02T00:00:00Z", WorkingLocationType: "home"}},
 		{"invalid color", CalendarCreateCmd{CalendarID: "cal1", Summary: "S", From: "2025-01-01T00:00:00Z", To: "2025-01-01T01:00:00Z", ColorId: "12"}},
@@ -41,16 +43,13 @@ func TestCalendarCreateCmd_ValidationErrors(t *testing.T) {
 	}
 
 	for _, tc := range cases {
-		if err := tc.cmd.Run(ctx, flags); err == nil {
+		if err := tc.cmd.Run(ctx, flags, nil); err == nil {
 			t.Fatalf("expected error for %s", tc.name)
 		}
 	}
 }
 
 func TestCalendarCreateCmd_WithExtras(t *testing.T) {
-	origNew := newCalendarService
-	t.Cleanup(func() { newCalendarService = origNew })
-
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		path := strings.TrimPrefix(r.URL.Path, "/calendar/v3")
 		if r.Method == http.MethodPost && strings.HasSuffix(path, "/events") {
@@ -73,13 +72,8 @@ func TestCalendarCreateCmd_WithExtras(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewService: %v", err)
 	}
-	newCalendarService = func(context.Context, string) (*calendar.Service, error) { return svc, nil }
 
-	u, uiErr := ui.New(ui.Options{Stdout: io.Discard, Stderr: io.Discard, Color: "never"})
-	if uiErr != nil {
-		t.Fatalf("ui.New: %v", uiErr)
-	}
-	ctx := outfmt.WithMode(ui.WithUI(context.Background(), u), outfmt.Mode{JSON: true})
+	ctx, output := newCalendarTestJSONContext(t, svc)
 	flags := &RootFlags{Account: "a@b.com"}
 
 	yes := true
@@ -109,13 +103,11 @@ func TestCalendarCreateCmd_WithExtras(t *testing.T) {
 		PrivateProps:          []string{"k=v"},
 		SharedProps:           []string{"s=v"},
 	}
-	out := captureStdout(t, func() {
-		if err := cmd.Run(ctx, flags); err != nil {
-			t.Fatalf("Run: %v", err)
-		}
-	})
-	if !strings.Contains(out, "\"event\"") {
-		t.Fatalf("unexpected json output: %q", out)
+	if err := cmd.Run(ctx, flags, nil); err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if !strings.Contains(output.String(), "\"event\"") {
+		t.Fatalf("unexpected json output: %q", output.String())
 	}
 }
 
@@ -125,6 +117,7 @@ func TestCalendarUpdateCmd_ValidationErrors(t *testing.T) {
 		t.Fatalf("ui.New: %v", uiErr)
 	}
 	ctx := ui.WithUI(context.Background(), u)
+	ctx = withDefaultTestRuntime(ctx)
 	flags := &RootFlags{Account: "a@b.com"}
 
 	{
@@ -144,8 +137,12 @@ func TestCalendarUpdateCmd_ValidationErrors(t *testing.T) {
 	{
 		cmd := &CalendarUpdateCmd{CalendarID: "cal", EventID: "evt", Scope: "nope"}
 		kctx := parseKongContext(t, cmd, []string{"cal", "evt", "--scope", "nope"})
-		if err := cmd.Run(ctx, kctx, flags); err == nil {
+		err := cmd.Run(ctx, kctx, flags)
+		if err == nil {
 			t.Fatalf("expected error for invalid scope")
+		}
+		if got := ExitCode(err); got != 2 {
+			t.Fatalf("ExitCode = %d, want 2 (err=%v)", got, err)
 		}
 	}
 	{
@@ -205,6 +202,20 @@ func TestCalendarUpdateCmd_ValidationErrors(t *testing.T) {
 		}
 	}
 	{
+		cmd := &CalendarUpdateCmd{CalendarID: "cal", EventID: "evt", EventType: "out-of-office", From: "2025-01-01", To: "2025-01-02"}
+		kctx := parseKongContext(t, cmd, []string{"cal", "evt", "--event-type", "out-of-office", "--from", "2025-01-01", "--to", "2025-01-02"})
+		if err := cmd.Run(ctx, kctx, flags); err == nil {
+			t.Fatalf("expected error for out-of-office date-only range")
+		}
+	}
+	{
+		cmd := &CalendarUpdateCmd{CalendarID: "cal", EventID: "evt", EventType: "out-of-office", From: "2025-01-01T00:00:00Z", To: "2025-01-02T00:00:00Z", AllDay: true}
+		kctx := parseKongContext(t, cmd, []string{"cal", "evt", "--event-type", "out-of-office", "--from", "2025-01-01T00:00:00Z", "--to", "2025-01-02T00:00:00Z", "--all-day"})
+		if err := cmd.Run(ctx, kctx, flags); err == nil {
+			t.Fatalf("expected error for out-of-office all-day range")
+		}
+	}
+	{
 		cmd := &CalendarUpdateCmd{CalendarID: "cal", EventID: "evt", Summary: "S", SendUpdates: "invalid"}
 		kctx := parseKongContext(t, cmd, []string{"cal", "evt", "--summary", "S", "--send-updates", "invalid"})
 		if err := cmd.Run(ctx, kctx, flags); err == nil {
@@ -219,6 +230,7 @@ func TestCalendarDeleteCmd_ValidationErrors(t *testing.T) {
 		t.Fatalf("ui.New: %v", uiErr)
 	}
 	ctx := ui.WithUI(context.Background(), u)
+	ctx = withDefaultTestRuntime(ctx)
 	flags := &RootFlags{Account: "a@b.com"}
 
 	cases := []struct {
@@ -234,8 +246,14 @@ func TestCalendarDeleteCmd_ValidationErrors(t *testing.T) {
 	}
 
 	for _, tc := range cases {
-		if err := tc.cmd.Run(ctx, flags); err == nil {
+		err := tc.cmd.Run(ctx, flags)
+		if err == nil {
 			t.Fatalf("expected error for %s", tc.name)
+		}
+		if tc.name == "invalid scope" {
+			if got := ExitCode(err); got != 2 {
+				t.Fatalf("ExitCode = %d, want 2 (err=%v)", got, err)
+			}
 		}
 	}
 }

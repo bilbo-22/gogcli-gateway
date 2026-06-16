@@ -10,11 +10,14 @@ import (
 func TestPaths_CreateDirs(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
+	t.Setenv("USERPROFILE", home)
 	t.Setenv("XDG_CONFIG_HOME", filepath.Join(home, "xdg-config"))
 
-	dir, err := EnsureDir()
-	if err != nil {
-		t.Fatalf("EnsureDir: %v", err)
+	layout := testSystemLayout(t, PathKindConfig, PathKindData)
+	dir := layout.ConfigDir
+
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		t.Fatalf("ensure config dir: %v", err)
 	}
 
 	if _, statErr := os.Stat(dir); statErr != nil {
@@ -25,7 +28,7 @@ func TestPaths_CreateDirs(t *testing.T) {
 		t.Fatalf("unexpected base: %q", filepath.Base(dir))
 	}
 
-	keyringDir, err := EnsureKeyringDir()
+	keyringDir, err := layout.EnsureKeyringDir()
 	if err != nil {
 		t.Fatalf("EnsureKeyringDir: %v", err)
 	}
@@ -34,34 +37,7 @@ func TestPaths_CreateDirs(t *testing.T) {
 		t.Fatalf("expected keyring dir: %v", statErr)
 	}
 
-	downloadsDir, err := EnsureDriveDownloadsDir()
-	if err != nil {
-		t.Fatalf("EnsureDriveDownloadsDir: %v", err)
-	}
-
-	if _, statErr := os.Stat(downloadsDir); statErr != nil {
-		t.Fatalf("expected downloads dir: %v", statErr)
-	}
-
-	attachmentsDir, err := EnsureGmailAttachmentsDir()
-	if err != nil {
-		t.Fatalf("EnsureGmailAttachmentsDir: %v", err)
-	}
-
-	if _, statErr := os.Stat(attachmentsDir); statErr != nil {
-		t.Fatalf("expected attachments dir: %v", statErr)
-	}
-
-	watchDir, err := EnsureGmailWatchDir()
-	if err != nil {
-		t.Fatalf("EnsureGmailWatchDir: %v", err)
-	}
-
-	if _, statErr := os.Stat(watchDir); statErr != nil {
-		t.Fatalf("expected watch dir: %v", statErr)
-	}
-
-	credsPath, err := ClientCredentialsPath()
+	credsPath, err := layout.ClientCredentialsPathFor(DefaultClientName)
 	if err != nil {
 		t.Fatalf("ClientCredentialsPath: %v", err)
 	}
@@ -95,6 +71,11 @@ func TestExpandPath(t *testing.T) {
 			name:  "tilde with subpath",
 			input: "~/Downloads/file.txt",
 			want:  filepath.Join(home, "Downloads/file.txt"),
+		},
+		{
+			name:  "tilde with backslash subpath",
+			input: `~\Downloads\file.txt`,
+			want:  filepath.Join(home, `Downloads\file.txt`),
 		},
 		{
 			name:  "absolute path unchanged",
@@ -133,15 +114,9 @@ func TestKeepServiceAccountPath_SafeFilename(t *testing.T) {
 	t.Setenv("HOME", home)
 	t.Setenv("XDG_CONFIG_HOME", filepath.Join(home, "xdg-config"))
 
-	dir, err := Dir()
-	if err != nil {
-		t.Fatalf("Dir: %v", err)
-	}
-
-	p, err := KeepServiceAccountPath("a/b@EXAMPLE.com")
-	if err != nil {
-		t.Fatalf("KeepServiceAccountPath: %v", err)
-	}
+	layout := testSystemLayout(t, PathKindData)
+	dir := layout.DataDir
+	p := layout.KeepServiceAccountPath("a/b@EXAMPLE.com")
 
 	if filepath.Dir(p) != dir {
 		t.Fatalf("expected keep path under %q, got %q", dir, p)

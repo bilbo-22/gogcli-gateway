@@ -11,15 +11,9 @@ import (
 
 	"google.golang.org/api/calendar/v3"
 	"google.golang.org/api/option"
-
-	"github.com/steipete/gogcli/internal/outfmt"
-	"github.com/steipete/gogcli/internal/ui"
 )
 
 func TestCalendarUpdateAndDelete(t *testing.T) {
-	origNew := newCalendarService
-	t.Cleanup(func() { newCalendarService = origNew })
-
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		path := strings.TrimPrefix(r.URL.Path, "/calendar/v3")
 		switch {
@@ -59,15 +53,10 @@ func TestCalendarUpdateAndDelete(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewService: %v", err)
 	}
-	newCalendarService = func(context.Context, string) (*calendar.Service, error) { return svc, nil }
 
 	flags := &RootFlags{Account: "a@b.com", Force: true}
-	u, uiErr := ui.New(ui.Options{Stdout: io.Discard, Stderr: io.Discard, Color: "never"})
-	if uiErr != nil {
-		t.Fatalf("ui.New: %v", uiErr)
-	}
-	ctx := ui.WithUI(context.Background(), u)
-	jsonCtx := outfmt.WithMode(ctx, outfmt.Mode{JSON: true})
+	ctx := withCalendarTestService(newCmdRuntimeOutputContext(t, io.Discard, io.Discard), svc)
+	jsonCtx, output := newCalendarTestJSONContext(t, svc)
 
 	// update requires changes
 	updateCmd := &CalendarUpdateCmd{}
@@ -76,21 +65,18 @@ func TestCalendarUpdateAndDelete(t *testing.T) {
 	}
 
 	// update json
-	jsonOut := captureStdout(t, func() {
-		updateCmd = &CalendarUpdateCmd{}
-		if err := runKong(t, updateCmd, []string{"cal1@example.com", "evt1", "--summary", "Updated"}, jsonCtx, flags); err != nil {
-			t.Fatalf("update: %v", err)
-		}
-	})
-	if !strings.Contains(jsonOut, "Updated") {
-		t.Fatalf("unexpected update json: %q", jsonOut)
+	updateCmd = &CalendarUpdateCmd{}
+	if err := runKong(t, updateCmd, []string{"cal1@example.com", "evt1", "--summary", "Updated"}, jsonCtx, flags); err != nil {
+		t.Fatalf("update: %v", err)
+	}
+	if !strings.Contains(output.String(), "Updated") {
+		t.Fatalf("unexpected update json: %q", output.String())
 	}
 
 	// delete json
-	_ = captureStdout(t, func() {
-		deleteCmd := &CalendarDeleteCmd{}
-		if err := runKong(t, deleteCmd, []string{"cal1@example.com", "evt1"}, jsonCtx, flags); err != nil {
-			t.Fatalf("delete: %v", err)
-		}
-	})
+	output.Reset()
+	deleteCmd := &CalendarDeleteCmd{}
+	if err := runKong(t, deleteCmd, []string{"cal1@example.com", "evt1"}, jsonCtx, flags); err != nil {
+		t.Fatalf("delete: %v", err)
+	}
 }

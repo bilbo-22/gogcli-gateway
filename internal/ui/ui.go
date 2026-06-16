@@ -45,8 +45,8 @@ func New(opts Options) (*UI, error) {
 		return nil, &ParseError{msg: "invalid --color (expected auto|always|never)"}
 	}
 
-	out := termenv.NewOutput(opts.Stdout, termenv.WithProfile(termenv.EnvColorProfile()))
-	errOut := termenv.NewOutput(opts.Stderr, termenv.WithProfile(termenv.EnvColorProfile()))
+	out := termenv.NewOutput(opts.Stdout)
+	errOut := termenv.NewOutput(opts.Stderr)
 
 	outProfile := chooseProfile(out.Profile, colorMode)
 	errProfile := chooseProfile(errOut.Profile, colorMode)
@@ -58,10 +58,6 @@ func New(opts Options) (*UI, error) {
 }
 
 func chooseProfile(detected termenv.Profile, mode string) termenv.Profile {
-	if termenv.EnvNoColor() {
-		return termenv.Ascii
-	}
-
 	switch mode {
 	case colorNever:
 		return termenv.Ascii
@@ -90,10 +86,6 @@ func (p *Printer) line(s string) {
 	_, _ = io.WriteString(p.o, s+"\n")
 }
 
-func (p *Printer) printf(format string, args ...any) {
-	p.line(fmt.Sprintf(format, args...))
-}
-
 func (p *Printer) Print(msg string) {
 	_, _ = io.WriteString(p.o, msg)
 }
@@ -116,7 +108,8 @@ func (p *Printer) Error(msg string) {
 }
 
 func (p *Printer) Errorf(format string, args ...any) { p.Error(fmt.Sprintf(format, args...)) }
-func (p *Printer) Printf(format string, args ...any) { p.printf(format, args...) }
+func (p *Printer) Printf(format string, args ...any) { _, _ = fmt.Fprintf(p.o, format, args...) }
+func (p *Printer) Linef(format string, args ...any)  { p.line(fmt.Sprintf(format, args...)) }
 func (p *Printer) Println(msg string)                { p.line(msg) }
 
 type ctxKey struct{}

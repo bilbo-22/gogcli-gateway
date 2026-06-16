@@ -3,7 +3,6 @@ package cmd
 import (
 	"context"
 	"fmt"
-	"os"
 	"strings"
 	"text/tabwriter"
 
@@ -28,7 +27,7 @@ func (c *SlidesListSlidesCmd) Run(ctx context.Context, flags *RootFlags) error {
 		return usage("empty presentationId")
 	}
 
-	slidesSvc, err := newSlidesService(ctx, account)
+	slidesSvc, err := slidesService(ctx, account)
 	if err != nil {
 		return err
 	}
@@ -46,7 +45,7 @@ func (c *SlidesListSlidesCmd) Run(ctx context.Context, flags *RootFlags) error {
 				"objectId": s.ObjectId,
 			}
 		}
-		return outfmt.WriteJSON(ctx, os.Stdout, map[string]any{
+		return outfmt.WriteJSON(ctx, stdoutWriter(ctx), map[string]any{
 			"presentationId": presentationID,
 			"title":          pres.Title,
 			"slideCount":     len(pres.Slides),
@@ -54,10 +53,10 @@ func (c *SlidesListSlidesCmd) Run(ctx context.Context, flags *RootFlags) error {
 		})
 	}
 
-	u.Out().Printf("Presentation: %s (%d slides)", pres.Title, len(pres.Slides))
+	u.Out().Linef("Presentation: %s (%d slides)", pres.Title, len(pres.Slides))
 	u.Out().Println("")
 
-	tw := tabwriter.NewWriter(os.Stdout, 0, 4, 2, ' ', 0)
+	tw := tabwriter.NewWriter(stdoutWriter(ctx), 0, 4, 2, ' ', 0)
 	fmt.Fprintln(tw, "#\tOBJECT ID")
 	for i, s := range pres.Slides {
 		fmt.Fprintf(tw, "%d\t%s\n", i+1, s.ObjectId)

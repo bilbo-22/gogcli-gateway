@@ -3,22 +3,32 @@ package cmd
 import (
 	"context"
 	"fmt"
-	"os"
 	"strings"
 
 	formsapi "google.golang.org/api/forms/v1"
 
-	"github.com/steipete/gogcli/internal/googleapi"
 	"github.com/steipete/gogcli/internal/outfmt"
 	"github.com/steipete/gogcli/internal/ui"
 )
 
-var newFormsService = googleapi.NewForms
-
 type FormsCmd struct {
-	Get       FormsGetCmd       `cmd:"" name:"get" aliases:"info,show" help:"Get a form"`
-	Create    FormsCreateCmd    `cmd:"" name:"create" aliases:"new" help:"Create a form"`
-	Responses FormsResponsesCmd `cmd:"" name:"responses" help:"Form responses"`
+	Get            FormsGetCmd            `cmd:"" name:"get" aliases:"info,show" help:"Get a form"`
+	Create         FormsCreateCmd         `cmd:"" name:"create" aliases:"new" help:"Create a form"`
+	Update         FormsUpdateCmd         `cmd:"" name:"update" aliases:"edit" help:"Update form title, description, or settings"`
+	Publish        FormsPublishCmd        `cmd:"" name:"publish" help:"Publish or unpublish a form"`
+	Questions      FormsQuestionsCmd      `cmd:"" name:"questions" help:"Form questions"`
+	AddQuestion    FormsAddQuestionCmd    `cmd:"" name:"add-question" aliases:"add-q,aq" help:"Add a question to a form"`
+	DeleteQuestion FormsDeleteQuestionCmd `cmd:"" name:"delete-question" aliases:"delete-q,dq,rm-q" help:"Delete a question by index"`
+	MoveQuestion   FormsMoveQuestionCmd   `cmd:"" name:"move-question" aliases:"move-q,mq" help:"Move a question to a new position"`
+	Responses      FormsResponsesCmd      `cmd:"" name:"responses" help:"Form responses"`
+	Watch          FormsWatchCmd          `cmd:"" name:"watch" aliases:"watches" help:"Response watches (push notifications)"`
+	Raw            FormsRawCmd            `cmd:"" name:"raw" help:"Dump raw Google Forms API response as JSON (Forms.Get; lossless; for scripting and LLM consumption)"`
+}
+
+type FormsQuestionsCmd struct {
+	Add    FormsAddQuestionCmd    `cmd:"" name:"add" aliases:"create,new" help:"Add a question to a form"`
+	Delete FormsDeleteQuestionCmd `cmd:"" name:"delete" aliases:"rm,remove,del" help:"Delete a question by index"`
+	Move   FormsMoveQuestionCmd   `cmd:"" name:"move" help:"Move a question to a new position"`
 }
 
 type FormsResponsesCmd struct {
@@ -40,7 +50,7 @@ func (c *FormsGetCmd) Run(ctx context.Context, flags *RootFlags) error {
 		return usage("empty formId")
 	}
 
-	svc, err := newFormsService(ctx, account)
+	svc, err := formsService(ctx, account)
 	if err != nil {
 		return err
 	}
@@ -51,7 +61,7 @@ func (c *FormsGetCmd) Run(ctx context.Context, flags *RootFlags) error {
 	}
 
 	if outfmt.IsJSON(ctx) {
-		return outfmt.WriteJSON(ctx, os.Stdout, map[string]any{
+		return outfmt.WriteJSON(ctx, stdoutWriter(ctx), map[string]any{
 			"form":     form,
 			"edit_url": formEditURL(formID),
 		})
@@ -68,10 +78,6 @@ type FormsCreateCmd struct {
 }
 
 func (c *FormsCreateCmd) Run(ctx context.Context, flags *RootFlags) error {
-	account, err := requireAccount(flags)
-	if err != nil {
-		return err
-	}
 	title := strings.TrimSpace(c.Title)
 	if title == "" {
 		return usage("empty --title")
@@ -85,23 +91,47 @@ func (c *FormsCreateCmd) Run(ctx context.Context, flags *RootFlags) error {
 		return dryRunErr
 	}
 
-	svc, err := newFormsService(ctx, account)
+	account, err := requireAccount(flags)
+	if err != nil {
+		return err
+	}
+
+	svc, err := formsService(ctx, account)
 	if err != nil {
 		return err
 	}
 
 	req := &formsapi.Form{Info: &formsapi.Info{
-		Title:       title,
-		Description: description,
+		Title: title,
 	}}
 	form, err := svc.Forms.Create(req).Context(ctx).Do()
 	if err != nil {
 		return err
 	}
+	if description != "" {
+		formID := strings.TrimSpace(form.FormId)
+		_, err := svc.Forms.BatchUpdate(formID, &formsapi.BatchUpdateFormRequest{
+			Requests: []*formsapi.Request{
+				{
+					UpdateFormInfo: &formsapi.UpdateFormInfoRequest{
+						Info:       &formsapi.Info{Description: description},
+						UpdateMask: "description",
+					},
+				},
+			},
+		}).Context(ctx).Do()
+		if err != nil {
+			return err
+		}
+		if form.Info == nil {
+			form.Info = &formsapi.Info{}
+		}
+		form.Info.Description = description
+	}
 
 	formID := strings.TrimSpace(form.FormId)
 	if outfmt.IsJSON(ctx) {
-		return outfmt.WriteJSON(ctx, os.Stdout, map[string]any{
+		return outfmt.WriteJSON(ctx, stdoutWriter(ctx), map[string]any{
 			"created":  true,
 			"form":     form,
 			"edit_url": formEditURL(formID),
@@ -109,8 +139,15 @@ func (c *FormsCreateCmd) Run(ctx context.Context, flags *RootFlags) error {
 	}
 
 	u := ui.FromContext(ctx)
-	u.Out().Printf("created\ttrue")
+	u.Out().Linef("created\ttrue")
 	printFormSummary(u, form, formID)
+	u.Err().Println("")
+	u.Err().Println("# Tip: Email notifications for new responses must be enabled manually:")
+	u.Err().Println("#   1. Open the edit URL above in your browser")
+	u.Err().Println("#   2. Click the Responses tab")
+	u.Err().Println("#   3. Click the three-dot menu (⋮)")
+	u.Err().Println("#   4. Toggle 'Get email notifications for new responses'")
+	u.Err().Println("# This setting is not available via the API.")
 	return nil
 }
 
@@ -134,7 +171,7 @@ func (c *FormsResponsesListCmd) Run(ctx context.Context, flags *RootFlags) error
 		return usage("--max must be > 0")
 	}
 
-	svc, err := newFormsService(ctx, account)
+	svc, err := formsService(ctx, account)
 	if err != nil {
 		return err
 	}
@@ -152,9 +189,13 @@ func (c *FormsResponsesListCmd) Run(ctx context.Context, flags *RootFlags) error
 	}
 
 	if outfmt.IsJSON(ctx) {
-		return outfmt.WriteJSON(ctx, os.Stdout, map[string]any{
+		responses := resp.Responses
+		if responses == nil {
+			responses = []*formsapi.FormResponse{}
+		}
+		return outfmt.WriteJSON(ctx, stdoutWriter(ctx), map[string]any{
 			"form_id":       formID,
-			"responses":     resp.Responses,
+			"responses":     responses,
 			"nextPageToken": resp.NextPageToken,
 		})
 	}
@@ -166,7 +207,7 @@ func (c *FormsResponsesListCmd) Run(ctx context.Context, flags *RootFlags) error
 			continue
 		}
 		submitted := firstFormTime(item.LastSubmittedTime, item.CreateTime)
-		u.Out().Printf("%s\t%s\t%s", item.ResponseId, submitted, item.RespondentEmail)
+		u.Out().Linef("%s\t%s\t%s", item.ResponseId, submitted, item.RespondentEmail)
 	}
 	if next := strings.TrimSpace(resp.NextPageToken); next != "" {
 		u.Err().Println("# Next page: --page " + next)
@@ -193,7 +234,7 @@ func (c *FormsResponseGetCmd) Run(ctx context.Context, flags *RootFlags) error {
 		return usage("empty responseId")
 	}
 
-	svc, err := newFormsService(ctx, account)
+	svc, err := formsService(ctx, account)
 	if err != nil {
 		return err
 	}
@@ -203,20 +244,20 @@ func (c *FormsResponseGetCmd) Run(ctx context.Context, flags *RootFlags) error {
 	}
 
 	if outfmt.IsJSON(ctx) {
-		return outfmt.WriteJSON(ctx, os.Stdout, map[string]any{
+		return outfmt.WriteJSON(ctx, stdoutWriter(ctx), map[string]any{
 			"response": resp,
 		})
 	}
 
 	u := ui.FromContext(ctx)
-	u.Out().Printf("response_id\t%s", resp.ResponseId)
-	u.Out().Printf("submitted\t%s", firstFormTime(resp.LastSubmittedTime, resp.CreateTime))
+	u.Out().Linef("response_id\t%s", resp.ResponseId)
+	u.Out().Linef("submitted\t%s", firstFormTime(resp.LastSubmittedTime, resp.CreateTime))
 	if resp.RespondentEmail != "" {
-		u.Out().Printf("email\t%s", resp.RespondentEmail)
+		u.Out().Linef("email\t%s", resp.RespondentEmail)
 	}
-	u.Out().Printf("answers\t%d", len(resp.Answers))
+	u.Out().Linef("answers\t%d", len(resp.Answers))
 	if resp.TotalScore != 0 {
-		u.Out().Printf("total_score\t%s", strings.TrimRight(strings.TrimRight(fmt.Sprintf("%.2f", resp.TotalScore), "0"), "."))
+		u.Out().Linef("total_score\t%s", strings.TrimRight(strings.TrimRight(fmt.Sprintf("%.2f", resp.TotalScore), "0"), "."))
 	}
 	return nil
 }
@@ -229,19 +270,19 @@ func printFormSummary(u *ui.UI, form *formsapi.Form, fallbackID string) {
 	if formID == "" {
 		formID = strings.TrimSpace(fallbackID)
 	}
-	u.Out().Printf("id\t%s", formID)
+	u.Out().Linef("id\t%s", formID)
 	if form.Info != nil {
 		if form.Info.Title != "" {
-			u.Out().Printf("title\t%s", form.Info.Title)
+			u.Out().Linef("title\t%s", form.Info.Title)
 		}
 		if form.Info.Description != "" {
-			u.Out().Printf("description\t%s", form.Info.Description)
+			u.Out().Linef("description\t%s", form.Info.Description)
 		}
 	}
 	if form.ResponderUri != "" {
-		u.Out().Printf("responder_uri\t%s", form.ResponderUri)
+		u.Out().Linef("responder_uri\t%s", form.ResponderUri)
 	}
-	u.Out().Printf("edit_url\t%s", formEditURL(formID))
+	u.Out().Linef("edit_url\t%s", formEditURL(formID))
 }
 
 func formEditURL(formID string) string {

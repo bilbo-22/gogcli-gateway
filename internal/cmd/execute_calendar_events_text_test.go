@@ -13,9 +13,6 @@ import (
 )
 
 func TestExecute_CalendarEvents_Text_WithPaging(t *testing.T) {
-	origNew := newCalendarService
-	t.Cleanup(func() { newCalendarService = origNew })
-
 	srv := httptest.NewServer(withPrimaryCalendar(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch {
 		case strings.Contains(r.URL.Path, "/calendars/c1@example.com/events"):
@@ -42,27 +39,20 @@ func TestExecute_CalendarEvents_Text_WithPaging(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewService: %v", err)
 	}
-	newCalendarService = func(context.Context, string) (*calendar.Service, error) { return svc, nil }
-
-	out := captureStdout(t, func() {
-		errOut := captureStderr(t, func() {
-			if err := Execute([]string{"--account", "a@b.com", "calendar", "events", "c1@example.com", "--from", "2025-12-17T00:00:00Z", "--to", "2025-12-18T00:00:00Z"}); err != nil {
-				t.Fatalf("Execute: %v", err)
-			}
-		})
-		if !strings.Contains(errOut, "# Next page: --page npt") {
-			t.Fatalf("unexpected stderr=%q", errOut)
-		}
-	})
+	result := executeWithCalendarTestService(t, []string{"--account", "a@b.com", "calendar", "events", "c1@example.com", "--from", "2025-12-17T00:00:00Z", "--to", "2025-12-18T00:00:00Z"}, svc)
+	if result.err != nil {
+		t.Fatalf("Execute: %v", result.err)
+	}
+	if !strings.Contains(result.stderr, "# More results: use --all-pages to fetch every page, or --page npt for the next page") {
+		t.Fatalf("unexpected stderr=%q", result.stderr)
+	}
+	out := result.stdout
 	if !strings.Contains(out, "ID") || !strings.Contains(out, "START") || !strings.Contains(out, "e1") || !strings.Contains(out, "S") {
 		t.Fatalf("unexpected out=%q", out)
 	}
 }
 
 func TestExecute_CalendarEvents_Text_All(t *testing.T) {
-	origNew := newCalendarService
-	t.Cleanup(func() { newCalendarService = origNew })
-
 	srv := httptest.NewServer(withPrimaryCalendar(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch {
 		case strings.Contains(r.URL.Path, "/users/me/calendarList"):
@@ -101,15 +91,11 @@ func TestExecute_CalendarEvents_Text_All(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewService: %v", err)
 	}
-	newCalendarService = func(context.Context, string) (*calendar.Service, error) { return svc, nil }
-
-	out := captureStdout(t, func() {
-		_ = captureStderr(t, func() {
-			if err := Execute([]string{"--account", "a@b.com", "calendar", "events", "--all", "--from", "2025-12-17T00:00:00Z", "--to", "2025-12-18T00:00:00Z"}); err != nil {
-				t.Fatalf("Execute: %v", err)
-			}
-		})
-	})
+	result := executeWithCalendarTestService(t, []string{"--account", "a@b.com", "calendar", "events", "--all", "--from", "2025-12-17T00:00:00Z", "--to", "2025-12-18T00:00:00Z"}, svc)
+	if result.err != nil {
+		t.Fatalf("Execute: %v", result.err)
+	}
+	out := result.stdout
 	if !strings.Contains(out, "CALENDAR") || !strings.Contains(out, "c1") || !strings.Contains(out, "e1") || !strings.Contains(out, "S1") {
 		t.Fatalf("unexpected out=%q", out)
 	}

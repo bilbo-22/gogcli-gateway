@@ -1,7 +1,6 @@
 package cmd
 
 import (
-	"context"
 	"encoding/base64"
 	"encoding/json"
 	"net/http"
@@ -10,18 +9,13 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
-
-	"google.golang.org/api/gmail/v1"
-	"google.golang.org/api/option"
 )
 
 func TestExecute_GmailThreadDraftsSend_JSON(t *testing.T) {
-	origNew := newGmailService
-	t.Cleanup(func() { newGmailService = origNew })
-
 	// Keep attachments out of real config.
 	home := t.TempDir()
 	t.Setenv("HOME", home)
+	t.Setenv("XDG_CONFIG_HOME", filepath.Join(home, "xdg-config"))
 	wd := t.TempDir()
 	origWD, _ := os.Getwd()
 	t.Cleanup(func() { _ = os.Chdir(origWD) })
@@ -147,70 +141,44 @@ func TestExecute_GmailThreadDraftsSend_JSON(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	svc, err := gmail.NewService(context.Background(),
-		option.WithoutAuthentication(),
-		option.WithHTTPClient(srv.Client()),
-		option.WithEndpoint(srv.URL+"/"),
-	)
-	if err != nil {
-		t.Fatalf("NewService: %v", err)
+	svc := newGmailServiceFromServer(t, srv)
+	run := func(args ...string) executeTestResult {
+		return executeWithGmailTestService(t, args, svc)
 	}
-	newGmailService = func(context.Context, string) (*gmail.Service, error) { return svc, nil }
 
-	_ = captureStderr(t, func() {
-		out := captureStdout(t, func() {
-			if err := Execute([]string{"--json", "--account", "a@b.com", "gmail", "thread", "get", "t1", "--download"}); err != nil {
-				t.Fatalf("thread: %v", err)
-			}
-		})
-		if !strings.Contains(out, "\"thread\"") || !strings.Contains(out, "\"downloaded\"") {
-			t.Fatalf("unexpected out=%q", out)
-		}
+	result := run("--json", "--account", "a@b.com", "gmail", "thread", "get", "t1", "--download")
+	if result.err != nil {
+		t.Fatalf("thread: %v", result.err)
+	}
+	if !strings.Contains(result.stdout, "\"thread\"") || !strings.Contains(result.stdout, "\"downloaded\"") {
+		t.Fatalf("unexpected out=%q", result.stdout)
+	}
 
-		// Verify attachment written to current directory (default).
-		expectedPath := filepath.Join(wd, "m1_a1_a.txt")
-		b, err := os.ReadFile(expectedPath)
-		if err != nil {
-			t.Fatalf("ReadFile: %v", err)
-		}
-		if string(b) != string(attData) {
-			t.Fatalf("content=%q", string(b))
-		}
+	// Verify attachment written to current directory (default).
+	expectedPath := filepath.Join(wd, "m1_a1_a.txt")
+	b, err := os.ReadFile(expectedPath)
+	if err != nil {
+		t.Fatalf("ReadFile: %v", err)
+	}
+	if string(b) != string(attData) {
+		t.Fatalf("content=%q", string(b))
+	}
 
-		_ = captureStdout(t, func() {
-			if err := Execute([]string{"--json", "--account", "a@b.com", "gmail", "drafts", "list"}); err != nil {
-				t.Fatalf("drafts list: %v", err)
-			}
-		})
-		_ = captureStdout(t, func() {
-			if err := Execute([]string{"--json", "--account", "a@b.com", "gmail", "drafts", "get", "d1", "--download"}); err != nil {
-				t.Fatalf("drafts get: %v", err)
-			}
-		})
-		_ = captureStdout(t, func() {
-			if err := Execute([]string{"--json", "--account", "a@b.com", "gmail", "drafts", "create", "--to", "x@y.com", "--subject", "S", "--body", "B"}); err != nil {
-				t.Fatalf("drafts create: %v", err)
-			}
-		})
-		_ = captureStdout(t, func() {
-			if err := Execute([]string{"--json", "--account", "a@b.com", "gmail", "drafts", "update", "d1", "--to", "x@y.com", "--subject", "Updated", "--body", "B"}); err != nil {
-				t.Fatalf("drafts update: %v", err)
-			}
-		})
-		_ = captureStdout(t, func() {
-			if err := Execute([]string{"--json", "--account", "a@b.com", "gmail", "drafts", "send", "d1"}); err != nil {
-				t.Fatalf("drafts send: %v", err)
-			}
-		})
-		_ = captureStdout(t, func() {
-			if err := Execute([]string{"--json", "--force", "--account", "a@b.com", "gmail", "drafts", "delete", "d1"}); err != nil {
-				t.Fatalf("drafts delete: %v", err)
-			}
-		})
-		_ = captureStdout(t, func() {
-			if err := Execute([]string{"--json", "--account", "a@b.com", "gmail", "send", "--to", "x@y.com", "--subject", "S", "--body", "B"}); err != nil {
-				t.Fatalf("send: %v", err)
-			}
-		})
-	})
+	commands := []struct {
+		name string
+		args []string
+	}{
+		{"drafts list", []string{"--json", "--account", "a@b.com", "gmail", "drafts", "list"}},
+		{"drafts get", []string{"--json", "--account", "a@b.com", "gmail", "drafts", "get", "d1", "--download"}},
+		{"drafts create", []string{"--json", "--account", "a@b.com", "gmail", "drafts", "create", "--to", "x@y.com", "--subject", "S", "--body", "B"}},
+		{"drafts update", []string{"--json", "--account", "a@b.com", "gmail", "drafts", "update", "d1", "--to", "x@y.com", "--subject", "Updated", "--body", "B"}},
+		{"drafts send", []string{"--json", "--account", "a@b.com", "gmail", "drafts", "send", "d1"}},
+		{"drafts delete", []string{"--json", "--force", "--account", "a@b.com", "gmail", "drafts", "delete", "d1"}},
+		{"send", []string{"--json", "--account", "a@b.com", "gmail", "send", "--to", "x@y.com", "--subject", "S", "--body", "B"}},
+	}
+	for _, command := range commands {
+		if result := run(command.args...); result.err != nil {
+			t.Fatalf("%s: %v", command.name, result.err)
+		}
+	}
 }

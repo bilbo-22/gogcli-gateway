@@ -12,10 +12,7 @@ func withTempConfigDir(t *testing.T) string {
 	t.Setenv("HOME", home)
 	t.Setenv("XDG_CONFIG_HOME", filepath.Join(home, "xdg-config"))
 
-	dir, err := Dir()
-	if err != nil {
-		t.Fatalf("Dir: %v", err)
-	}
+	dir := testSystemLayout(t, PathKindConfig).ConfigDir
 
 	if err := os.MkdirAll(dir, 0o700); err != nil {
 		t.Fatalf("mkdir: %v", err)
@@ -154,6 +151,11 @@ func TestAccountAndDomainMappings(t *testing.T) {
 
 func TestResolveClientForAccount(t *testing.T) {
 	dir := withTempConfigDir(t)
+	store := NewClientCredentialsStore(testSystemLayout(t, PathKindConfig, PathKindData))
+	credentialsExist := func(client string) (bool, error) {
+		_, ok, err := store.ExistingPath(client)
+		return ok, err
+	}
 
 	t.Run("override wins", func(t *testing.T) {
 		cfg := File{
@@ -161,7 +163,7 @@ func TestResolveClientForAccount(t *testing.T) {
 			ClientDomains:  map[string]string{"example.com": "domain"},
 		}
 
-		got, err := ResolveClientForAccount(cfg, "user@example.com", "Custom")
+		got, err := ResolveClientForAccountWithCredentials(cfg, "user@example.com", "Custom", credentialsExist)
 		if err != nil {
 			t.Fatalf("ResolveClientForAccount: %v", err)
 		}
@@ -174,7 +176,7 @@ func TestResolveClientForAccount(t *testing.T) {
 	t.Run("account mapping", func(t *testing.T) {
 		cfg := File{AccountClients: map[string]string{"user@example.com": "work"}}
 
-		got, err := ResolveClientForAccount(cfg, "USER@example.com", "")
+		got, err := ResolveClientForAccountWithCredentials(cfg, "USER@example.com", "", credentialsExist)
 		if err != nil {
 			t.Fatalf("ResolveClientForAccount: %v", err)
 		}
@@ -187,7 +189,7 @@ func TestResolveClientForAccount(t *testing.T) {
 	t.Run("domain mapping", func(t *testing.T) {
 		cfg := File{ClientDomains: map[string]string{"example.com": "domain"}}
 
-		got, err := ResolveClientForAccount(cfg, "user@example.com", "")
+		got, err := ResolveClientForAccountWithCredentials(cfg, "user@example.com", "", credentialsExist)
 		if err != nil {
 			t.Fatalf("ResolveClientForAccount: %v", err)
 		}
@@ -204,7 +206,7 @@ func TestResolveClientForAccount(t *testing.T) {
 		}
 		cfg := File{}
 
-		got, err := ResolveClientForAccount(cfg, "user@example.com", "")
+		got, err := ResolveClientForAccountWithCredentials(cfg, "user@example.com", "", credentialsExist)
 		if err != nil {
 			t.Fatalf("ResolveClientForAccount: %v", err)
 		}
@@ -217,7 +219,7 @@ func TestResolveClientForAccount(t *testing.T) {
 	t.Run("default fallback", func(t *testing.T) {
 		cfg := File{}
 
-		got, err := ResolveClientForAccount(cfg, "user@nomap.com", "")
+		got, err := ResolveClientForAccountWithCredentials(cfg, "user@nomap.com", "", credentialsExist)
 		if err != nil {
 			t.Fatalf("ResolveClientForAccount: %v", err)
 		}
@@ -242,7 +244,7 @@ func TestListClientCredentials(t *testing.T) {
 		}
 	}
 
-	list, err := ListClientCredentials()
+	list, err := NewClientCredentialsStore(testSystemLayout(t, PathKindConfig, PathKindData)).List()
 	if err != nil {
 		t.Fatalf("ListClientCredentials: %v", err)
 	}

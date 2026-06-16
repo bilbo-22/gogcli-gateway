@@ -12,9 +12,6 @@ import (
 	"github.com/stretchr/testify/require"
 	"google.golang.org/api/docs/v1"
 	"google.golang.org/api/option"
-
-	"github.com/steipete/gogcli/internal/outfmt"
-	"github.com/steipete/gogcli/internal/ui"
 )
 
 // =============================================================================
@@ -214,24 +211,12 @@ func TestSedIntegration_DryRun(t *testing.T) {
 	srv := mockDocsServerAdvanced(t, doc, nil)
 	defer srv.Close()
 
-	origNewDocs := newDocsService
-	newDocsService = func(ctx context.Context, account string) (*docs.Service, error) {
-		return docs.NewService(ctx,
-			option.WithoutAuthentication(),
-			option.WithEndpoint(srv.URL+"/"),
-		)
-	}
-	defer func() { newDocsService = origNewDocs }()
-
-	u, _ := ui.New(ui.Options{Stdout: io.Discard, Stderr: io.Discard, Color: "never"})
-	ctx := outfmt.WithMode(ui.WithUI(context.Background(), u), outfmt.Mode{JSON: true})
-
 	cmd := &DocsSedCmd{
 		DocID:      "test-doc-id",
 		Expression: "s/hello/world/",
 	}
 	flags := &RootFlags{Account: "test@example.com", DryRun: true}
-	err := cmd.Run(ctx, flags)
+	err := cmd.Run(newSedIntegrationContext(t, srv), flags)
 	assert.NoError(t, err)
 }
 

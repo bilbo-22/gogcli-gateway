@@ -13,9 +13,6 @@ import (
 )
 
 func TestExecute_CalendarRespond_JSON(t *testing.T) {
-	origNew := newCalendarService
-	t.Cleanup(func() { newCalendarService = origNew })
-
 	const calendarID = "c1@example.com"
 	const eventID = "e1"
 
@@ -72,21 +69,17 @@ func TestExecute_CalendarRespond_JSON(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewService: %v", err)
 	}
-	newCalendarService = func(context.Context, string) (*calendar.Service, error) { return svc, nil }
-
-	out := captureStdout(t, func() {
-		_ = captureStderr(t, func() {
-			if err := Execute([]string{
-				"--json",
-				"--account", "a@b.com",
-				"calendar", "respond",
-				calendarID, eventID,
-				"--status", "accepted",
-			}); err != nil {
-				t.Fatalf("Execute: %v", err)
-			}
-		})
-	})
+	result := executeWithCalendarTestService(t, []string{
+		"--json",
+		"--account", "a@b.com",
+		"calendar", "respond",
+		calendarID, eventID,
+		"--status", "accepted",
+	}, svc)
+	if result.err != nil {
+		t.Fatalf("Execute: %v", result.err)
+	}
+	out := result.stdout
 
 	var parsed struct {
 		Event struct {

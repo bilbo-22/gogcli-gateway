@@ -1,21 +1,14 @@
 package cmd
 
 import (
-	"context"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
-
-	"google.golang.org/api/gmail/v1"
-	"google.golang.org/api/option"
 )
 
 func TestExecute_GmailThreadAliases(t *testing.T) {
-	origNew := newGmailService
-	t.Cleanup(func() { newGmailService = origNew })
-
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		path := strings.TrimPrefix(r.URL.Path, "/gmail/v1")
 		switch {
@@ -45,30 +38,18 @@ func TestExecute_GmailThreadAliases(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	svc, err := gmail.NewService(context.Background(),
-		option.WithoutAuthentication(),
-		option.WithHTTPClient(srv.Client()),
-		option.WithEndpoint(srv.URL+"/"),
-	)
-	if err != nil {
-		t.Fatalf("NewService: %v", err)
-	}
-	newGmailService = func(context.Context, string) (*gmail.Service, error) { return svc, nil }
-
+	svc := newGmailServiceFromServer(t, srv)
 	cases := [][]string{
 		{"--plain", "--account", "a@b.com", "gmail", "read", "t1"},
 		{"--plain", "--account", "a@b.com", "gmail", "thread", "t1"},
 	}
 	for _, args := range cases {
-		out := captureStdout(t, func() {
-			_ = captureStderr(t, func() {
-				if execErr := Execute(args); execErr != nil {
-					t.Fatalf("Execute %v: %v", args, execErr)
-				}
-			})
-		})
-		if !strings.Contains(out, "Thread contains 1 message(s)") {
-			t.Fatalf("unexpected output for %v: %q", args, out)
+		result := executeWithGmailTestService(t, args, svc)
+		if result.err != nil {
+			t.Fatalf("Execute %v: %v\nstderr=%q", args, result.err, result.stderr)
+		}
+		if !strings.Contains(result.stdout, "Thread contains 1 message(s)") {
+			t.Fatalf("unexpected output for %v: %q", args, result.stdout)
 		}
 	}
 }

@@ -3,7 +3,6 @@ package cmd
 import (
 	"context"
 	"fmt"
-	"os"
 	"strings"
 
 	"google.golang.org/api/classroom/v1"
@@ -29,17 +28,15 @@ type ClassroomTopicsListCmd struct {
 }
 
 func (c *ClassroomTopicsListCmd) Run(ctx context.Context, flags *RootFlags) error {
-	u := ui.FromContext(ctx)
-	account, err := requireAccount(flags)
-	if err != nil {
-		return err
-	}
 	courseID := strings.TrimSpace(c.CourseID)
 	if courseID == "" {
 		return usage("empty courseId")
 	}
+	if c.Max <= 0 {
+		return usage("max must be > 0")
+	}
 
-	svc, err := newClassroomService(ctx, account)
+	_, svc, err := requireClassroomService(ctx, flags)
 	if err != nil {
 		return wrapClassroomError(err)
 	}
@@ -49,62 +46,28 @@ func (c *ClassroomTopicsListCmd) Run(ctx context.Context, flags *RootFlags) erro
 		if strings.TrimSpace(pageToken) != "" {
 			call = call.PageToken(pageToken)
 		}
-		resp, err := call.Do()
-		if err != nil {
-			return nil, "", wrapClassroomError(err)
+		resp, callErr := call.Do()
+		if callErr != nil {
+			return nil, "", wrapClassroomError(callErr)
 		}
 		return resp.Topic, resp.NextPageToken, nil
 	}
 
-	var topics []*classroom.Topic
-	nextPageToken := ""
-	if c.All {
-		all, err := collectAllPages(c.Page, fetch)
-		if err != nil {
-			return err
-		}
-		topics = all
-	} else {
-		var err error
-		topics, nextPageToken, err = fetch(c.Page)
-		if err != nil {
-			return err
-		}
+	topics, nextPageToken, err := fetchClassroomPagedList(c.All, c.Page, fetch)
+	if err != nil {
+		return err
 	}
 
-	if outfmt.IsJSON(ctx) {
-		if err := outfmt.WriteJSON(ctx, os.Stdout, map[string]any{
-			"topics":        topics,
-			"nextPageToken": nextPageToken,
-		}); err != nil {
-			return err
-		}
-		if len(topics) == 0 {
-			return failEmptyExit(c.FailEmpty)
-		}
-		return nil
-	}
-
-	if len(topics) == 0 {
-		u.Err().Println("No topics")
-		return failEmptyExit(c.FailEmpty)
-	}
-
-	w, flush := tableWriter(ctx)
-	defer flush()
-	fmt.Fprintln(w, "TOPIC_ID\tNAME\tUPDATED")
-	for _, topic := range topics {
-		if topic == nil {
-			continue
-		}
-		fmt.Fprintf(w, "%s\t%s\t%s\n",
-			sanitizeTab(topic.TopicId),
-			sanitizeTab(topic.Name),
-			sanitizeTab(topic.UpdateTime),
-		)
-	}
-	printNextPageHint(u, nextPageToken)
-	return nil
+	return writeClassroomPagedList(
+		ctx,
+		"topics",
+		topics,
+		nextPageToken,
+		"No topics",
+		c.FailEmpty,
+		false,
+		classroomTopicColumns(),
+	)
 }
 
 type ClassroomTopicsGetCmd struct {
@@ -114,10 +77,6 @@ type ClassroomTopicsGetCmd struct {
 
 func (c *ClassroomTopicsGetCmd) Run(ctx context.Context, flags *RootFlags) error {
 	u := ui.FromContext(ctx)
-	account, err := requireAccount(flags)
-	if err != nil {
-		return err
-	}
 	courseID := strings.TrimSpace(c.CourseID)
 	topicID := strings.TrimSpace(c.TopicID)
 	if courseID == "" {
@@ -127,7 +86,7 @@ func (c *ClassroomTopicsGetCmd) Run(ctx context.Context, flags *RootFlags) error
 		return usage("empty topicId")
 	}
 
-	svc, err := newClassroomService(ctx, account)
+	_, svc, err := requireClassroomService(ctx, flags)
 	if err != nil {
 		return wrapClassroomError(err)
 	}
@@ -138,13 +97,13 @@ func (c *ClassroomTopicsGetCmd) Run(ctx context.Context, flags *RootFlags) error
 	}
 
 	if outfmt.IsJSON(ctx) {
-		return outfmt.WriteJSON(ctx, os.Stdout, map[string]any{"topic": topic})
+		return outfmt.WriteJSON(ctx, stdoutWriter(ctx), map[string]any{"topic": topic})
 	}
 
-	u.Out().Printf("id\t%s", topic.TopicId)
-	u.Out().Printf("name\t%s", topic.Name)
+	u.Out().Linef("id\t%s", topic.TopicId)
+	u.Out().Linef("name\t%s", topic.Name)
 	if topic.UpdateTime != "" {
-		u.Out().Printf("updated\t%s", topic.UpdateTime)
+		u.Out().Linef("updated\t%s", topic.UpdateTime)
 	}
 	return nil
 }
@@ -173,12 +132,7 @@ func (c *ClassroomTopicsCreateCmd) Run(ctx context.Context, flags *RootFlags) er
 		return err
 	}
 
-	account, err := requireAccount(flags)
-	if err != nil {
-		return err
-	}
-
-	svc, err := newClassroomService(ctx, account)
+	_, svc, err := requireClassroomService(ctx, flags)
 	if err != nil {
 		return wrapClassroomError(err)
 	}
@@ -189,10 +143,10 @@ func (c *ClassroomTopicsCreateCmd) Run(ctx context.Context, flags *RootFlags) er
 	}
 
 	if outfmt.IsJSON(ctx) {
-		return outfmt.WriteJSON(ctx, os.Stdout, map[string]any{"topic": created})
+		return outfmt.WriteJSON(ctx, stdoutWriter(ctx), map[string]any{"topic": created})
 	}
-	u.Out().Printf("id\t%s", created.TopicId)
-	u.Out().Printf("name\t%s", created.Name)
+	u.Out().Linef("id\t%s", created.TopicId)
+	u.Out().Linef("name\t%s", created.Name)
 	return nil
 }
 
@@ -227,12 +181,7 @@ func (c *ClassroomTopicsUpdateCmd) Run(ctx context.Context, flags *RootFlags) er
 		return err
 	}
 
-	account, err := requireAccount(flags)
-	if err != nil {
-		return err
-	}
-
-	svc, err := newClassroomService(ctx, account)
+	_, svc, err := requireClassroomService(ctx, flags)
 	if err != nil {
 		return wrapClassroomError(err)
 	}
@@ -243,10 +192,10 @@ func (c *ClassroomTopicsUpdateCmd) Run(ctx context.Context, flags *RootFlags) er
 	}
 
 	if outfmt.IsJSON(ctx) {
-		return outfmt.WriteJSON(ctx, os.Stdout, map[string]any{"topic": updated})
+		return outfmt.WriteJSON(ctx, stdoutWriter(ctx), map[string]any{"topic": updated})
 	}
-	u.Out().Printf("id\t%s", updated.TopicId)
-	u.Out().Printf("name\t%s", updated.Name)
+	u.Out().Linef("id\t%s", updated.TopicId)
+	u.Out().Linef("name\t%s", updated.Name)
 	return nil
 }
 
@@ -266,16 +215,14 @@ func (c *ClassroomTopicsDeleteCmd) Run(ctx context.Context, flags *RootFlags) er
 		return usage("empty topicId")
 	}
 
-	if err := confirmDestructive(ctx, flags, fmt.Sprintf("delete topic %s from %s", topicID, courseID)); err != nil {
+	if err := dryRunAndConfirmDestructive(ctx, flags, "classroom.topics.delete", map[string]any{
+		"course_id": courseID,
+		"topic_id":  topicID,
+	}, fmt.Sprintf("delete topic %s from %s", topicID, courseID)); err != nil {
 		return err
 	}
 
-	account, err := requireAccount(flags)
-	if err != nil {
-		return err
-	}
-
-	svc, err := newClassroomService(ctx, account)
+	_, svc, err := requireClassroomService(ctx, flags)
 	if err != nil {
 		return wrapClassroomError(err)
 	}

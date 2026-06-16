@@ -10,17 +10,10 @@ import (
 	"testing"
 
 	"google.golang.org/api/gmail/v1"
-	"google.golang.org/api/option"
-
-	"github.com/steipete/gogcli/internal/ui"
 )
 
 func TestGmailSendCmd_ValidationErrors(t *testing.T) {
-	u, uiErr := ui.New(ui.Options{Stdout: io.Discard, Stderr: io.Discard, Color: "never"})
-	if uiErr != nil {
-		t.Fatalf("ui.New: %v", uiErr)
-	}
-	ctx := ui.WithUI(context.Background(), u)
+	ctx := newCmdRuntimeOutputContext(t, io.Discard, io.Discard)
 	flags := &RootFlags{Account: "a@b.com"}
 
 	cases := []GmailSendCmd{
@@ -30,21 +23,41 @@ func TestGmailSendCmd_ValidationErrors(t *testing.T) {
 		{To: "a@b.com", Body: "B"},
 		{To: "a@b.com", Subject: "S"},
 		{To: "a@b.com", Subject: "S", Body: "B", TrackSplit: true},
+		{To: "a@b.com", Subject: "S", Body: "B", Track: true},
 	}
 
 	for _, cmd := range cases {
-		if err := cmd.Run(ctx, flags); err == nil {
+		err := cmd.Run(ctx, flags)
+		if err == nil {
 			t.Fatalf("expected validation error")
+		}
+		if got := ExitCode(err); got != 2 {
+			t.Fatalf("expected usage exit code 2, got %d (err=%v)", got, err)
+		}
+	}
+}
+
+func TestGmailSendCmd_InvalidHeadersAreUsageErrorsBeforeDryRun(t *testing.T) {
+	ctx := newCmdRuntimeOutputContext(t, io.Discard, io.Discard)
+	flags := &RootFlags{Account: "a@b.com", DryRun: true}
+
+	for _, cmd := range []GmailSendCmd{
+		{To: "bad\ncc:evil@example.com", Subject: "S", Body: "B"},
+		{To: "a@example.com", ReplyTo: "bad\ncc:evil@example.com", Subject: "S", Body: "B"},
+		{To: "a@example.com", Subject: "S\nInjected: yes", Body: "B"},
+	} {
+		err := cmd.Run(ctx, flags)
+		if err == nil {
+			t.Fatal("expected invalid header error")
+		}
+		if got := ExitCode(err); got != 2 {
+			t.Fatalf("ExitCode = %d, want 2 (err=%v)", got, err)
 		}
 	}
 }
 
 func TestGmailSendCmd_MissingAccount(t *testing.T) {
-	u, uiErr := ui.New(ui.Options{Stdout: io.Discard, Stderr: io.Discard, Color: "never"})
-	if uiErr != nil {
-		t.Fatalf("ui.New: %v", uiErr)
-	}
-	ctx := ui.WithUI(context.Background(), u)
+	ctx := newCmdRuntimeOutputContext(t, io.Discard, io.Discard)
 	cmd := &GmailSendCmd{To: "a@b.com", Subject: "S", Body: "B"}
 	if err := cmd.Run(ctx, &RootFlags{}); err == nil {
 		t.Fatalf("expected missing account error")
@@ -52,26 +65,15 @@ func TestGmailSendCmd_MissingAccount(t *testing.T) {
 }
 
 func TestGmailSendCmd_ServiceError(t *testing.T) {
-	origNew := newGmailService
-	t.Cleanup(func() { newGmailService = origNew })
-	newGmailService = func(context.Context, string) (*gmail.Service, error) {
+	ctx := withGmailTestServiceFactory(newCmdRuntimeOutputContext(t, io.Discard, io.Discard), func(context.Context, string) (*gmail.Service, error) {
 		return nil, errors.New("svc")
-	}
-
-	u, uiErr := ui.New(ui.Options{Stdout: io.Discard, Stderr: io.Discard, Color: "never"})
-	if uiErr != nil {
-		t.Fatalf("ui.New: %v", uiErr)
-	}
-	ctx := ui.WithUI(context.Background(), u)
+	})
 	if err := (&GmailSendCmd{To: "a@b.com", Subject: "S", Body: "B"}).Run(ctx, &RootFlags{Account: "a@b.com"}); err == nil {
 		t.Fatalf("expected service error")
 	}
 }
 
 func TestGmailSendCmd_FromUnverified(t *testing.T) {
-	origNew := newGmailService
-	t.Cleanup(func() { newGmailService = origNew })
-
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if strings.Contains(r.URL.Path, "/gmail/v1/users/me/settings/sendAs/") && r.Method == http.MethodGet {
 			w.Header().Set("Content-Type", "application/json")
@@ -82,21 +84,8 @@ func TestGmailSendCmd_FromUnverified(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	svc, err := gmail.NewService(context.Background(),
-		option.WithoutAuthentication(),
-		option.WithHTTPClient(srv.Client()),
-		option.WithEndpoint(srv.URL+"/"),
-	)
-	if err != nil {
-		t.Fatalf("NewService: %v", err)
-	}
-	newGmailService = func(context.Context, string) (*gmail.Service, error) { return svc, nil }
-
-	u, uiErr := ui.New(ui.Options{Stdout: io.Discard, Stderr: io.Discard, Color: "never"})
-	if uiErr != nil {
-		t.Fatalf("ui.New: %v", uiErr)
-	}
-	ctx := ui.WithUI(context.Background(), u)
+	svc := newGmailServiceFromServer(t, srv)
+	ctx := withGmailTestService(newCmdRuntimeOutputContext(t, io.Discard, io.Discard), svc)
 	cmd := &GmailSendCmd{To: "a@b.com", Subject: "S", Body: "B", From: "alias@example.com"}
 	if err := cmd.Run(ctx, &RootFlags{Account: "a@b.com"}); err == nil {
 		t.Fatalf("expected unverified from error")
@@ -104,29 +93,13 @@ func TestGmailSendCmd_FromUnverified(t *testing.T) {
 }
 
 func TestGmailSendCmd_ReplyInfoError(t *testing.T) {
-	origNew := newGmailService
-	t.Cleanup(func() { newGmailService = origNew })
-
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		http.NotFound(w, r)
 	}))
 	defer srv.Close()
 
-	svc, err := gmail.NewService(context.Background(),
-		option.WithoutAuthentication(),
-		option.WithHTTPClient(srv.Client()),
-		option.WithEndpoint(srv.URL+"/"),
-	)
-	if err != nil {
-		t.Fatalf("NewService: %v", err)
-	}
-	newGmailService = func(context.Context, string) (*gmail.Service, error) { return svc, nil }
-
-	u, uiErr := ui.New(ui.Options{Stdout: io.Discard, Stderr: io.Discard, Color: "never"})
-	if uiErr != nil {
-		t.Fatalf("ui.New: %v", uiErr)
-	}
-	ctx := ui.WithUI(context.Background(), u)
+	svc := newGmailServiceFromServer(t, srv)
+	ctx := withGmailTestService(newCmdRuntimeOutputContext(t, io.Discard, io.Discard), svc)
 	cmd := &GmailSendCmd{
 		To:               "a@b.com",
 		Subject:          "S",

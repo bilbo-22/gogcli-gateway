@@ -11,6 +11,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/steipete/gogcli/internal/app"
 	"github.com/steipete/gogcli/internal/config"
 	"github.com/steipete/gogcli/internal/googleauth"
 	"github.com/steipete/gogcli/internal/outfmt"
@@ -39,6 +40,9 @@ func TestAuthCredentialsCmd_ErrorsAndStdin(t *testing.T) {
 
 	home := t.TempDir()
 	t.Setenv("HOME", home)
+	t.Setenv("XDG_CONFIG_HOME", filepath.Join(home, "xdg-config"))
+	useFileKeyringForAuthCredentials(t)
+	ctx = withAuthStore(ctx, newMemSecretsStore())
 	creds := `{"installed":{"client_id":"id","client_secret":"secret"}}`
 	out := captureStdout(t, func() {
 		withStdin(t, creds, func() {
@@ -53,29 +57,26 @@ func TestAuthCredentialsCmd_ErrorsAndStdin(t *testing.T) {
 }
 
 func TestAuthTokensList_ErrorsAndEmpty(t *testing.T) {
-	origOpen := openSecretsStore
-	t.Cleanup(func() { openSecretsStore = origOpen })
-
 	u, uiErr := ui.New(ui.Options{Stdout: io.Discard, Stderr: io.Discard, Color: "never"})
 	if uiErr != nil {
 		t.Fatalf("ui.New: %v", uiErr)
 	}
 	ctx := ui.WithUI(context.Background(), u)
 
-	openSecretsStore = func() (secrets.Store, error) { return nil, errors.New("boom") }
+	ctx = withAuthOperations(ctx, app.AuthOperations{
+		OpenSecretsStore: func() (secrets.Store, error) { return nil, errors.New("boom") },
+	})
 	if err := (&AuthTokensListCmd{}).Run(ctx, &RootFlags{}); err == nil {
 		t.Fatalf("expected open error")
 	}
 
-	openSecretsStore = func() (secrets.Store, error) {
-		return &memStoreErr{keysErr: errors.New("keys")}, nil
-	}
+	ctx = withAuthStore(ctx, &memStoreErr{keysErr: errors.New("keys")})
 	if err := (&AuthTokensListCmd{}).Run(ctx, &RootFlags{}); err == nil {
 		t.Fatalf("expected keys error")
 	}
 
 	store := newMemStore()
-	openSecretsStore = func() (secrets.Store, error) { return store, nil }
+	ctx = withAuthStore(ctx, store)
 	if err := (&AuthTokensListCmd{}).Run(ctx, &RootFlags{}); err != nil {
 		t.Fatalf("empty list: %v", err)
 	}
@@ -97,9 +98,6 @@ func (m *memStoreErr) GetDefaultAccount(string) (string, error) { return "", nil
 func (m *memStoreErr) SetDefaultAccount(string, string) error   { return nil }
 
 func TestAuthTokensDelete_Errors(t *testing.T) {
-	origOpen := openSecretsStore
-	t.Cleanup(func() { openSecretsStore = origOpen })
-
 	u, uiErr := ui.New(ui.Options{Stdout: io.Discard, Stderr: io.Discard, Color: "never"})
 	if uiErr != nil {
 		t.Fatalf("ui.New: %v", uiErr)
@@ -114,23 +112,20 @@ func TestAuthTokensDelete_Errors(t *testing.T) {
 		t.Fatalf("expected confirm error")
 	}
 
-	openSecretsStore = func() (secrets.Store, error) { return nil, errors.New("open") }
+	ctx = withAuthOperations(ctx, app.AuthOperations{
+		OpenSecretsStore: func() (secrets.Store, error) { return nil, errors.New("open") },
+	})
 	if err := (&AuthTokensDeleteCmd{Email: "a@b.com"}).Run(ctx, &RootFlags{Force: true}); err == nil {
 		t.Fatalf("expected open error")
 	}
 
-	openSecretsStore = func() (secrets.Store, error) {
-		return &memStoreErr{deleteErr: errors.New("delete")}, nil
-	}
+	ctx = withAuthStore(ctx, &memStoreErr{deleteErr: errors.New("delete")})
 	if err := (&AuthTokensDeleteCmd{Email: "a@b.com"}).Run(ctx, &RootFlags{Force: true}); err == nil {
 		t.Fatalf("expected delete error")
 	}
 }
 
 func TestAuthTokensExport_UsageAndErrors(t *testing.T) {
-	origOpen := openSecretsStore
-	t.Cleanup(func() { openSecretsStore = origOpen })
-
 	u, uiErr := ui.New(ui.Options{Stdout: io.Discard, Stderr: io.Discard, Color: "never"})
 	if uiErr != nil {
 		t.Fatalf("ui.New: %v", uiErr)
@@ -144,20 +139,20 @@ func TestAuthTokensExport_UsageAndErrors(t *testing.T) {
 		t.Fatalf("expected missing outPath error")
 	}
 
-	openSecretsStore = func() (secrets.Store, error) { return nil, errors.New("open") }
+	ctx = withAuthOperations(ctx, app.AuthOperations{
+		OpenSecretsStore: func() (secrets.Store, error) { return nil, errors.New("open") },
+	})
 	if err := (&AuthTokensExportCmd{Email: "a@b.com", Output: OutputPathRequiredFlag{Path: "out"}}).Run(ctx, &RootFlags{}); err == nil {
 		t.Fatalf("expected open error")
 	}
 
-	openSecretsStore = func() (secrets.Store, error) {
-		return &memStoreErr{}, nil
-	}
+	ctx = withAuthStore(ctx, &memStoreErr{})
 	if err := (&AuthTokensExportCmd{Email: "a@b.com", Output: OutputPathRequiredFlag{Path: "out"}}).Run(ctx, &RootFlags{}); err == nil {
 		t.Fatalf("expected get token error")
 	}
 
 	store := newMemStore()
-	openSecretsStore = func() (secrets.Store, error) { return store, nil }
+	ctx = withAuthStore(ctx, store)
 	_ = store.SetToken(config.DefaultClientName, "a@b.com", secrets.Token{Email: "a@b.com", RefreshToken: "rt"})
 
 	blocker := filepath.Join(t.TempDir(), "blocker")
@@ -175,13 +170,6 @@ func TestAuthTokensExport_UsageAndErrors(t *testing.T) {
 }
 
 func TestAuthTokensImport_ErrorsAndStdin(t *testing.T) {
-	origOpen := openSecretsStore
-	origEnsure := ensureKeychainAccess
-	t.Cleanup(func() {
-		openSecretsStore = origOpen
-		ensureKeychainAccess = origEnsure
-	})
-
 	u, uiErr := ui.New(ui.Options{Stdout: io.Discard, Stderr: io.Discard, Color: "never"})
 	if uiErr != nil {
 		t.Fatalf("ui.New: %v", uiErr)
@@ -198,6 +186,8 @@ func TestAuthTokensImport_ErrorsAndStdin(t *testing.T) {
 	}
 	if err := (&AuthTokensImportCmd{InPath: tmp}).Run(ctx, &RootFlags{}); err == nil {
 		t.Fatalf("expected unmarshal error")
+	} else if ExitCode(err) != 2 || !strings.Contains(err.Error(), "invalid token JSON") {
+		t.Fatalf("unmarshal error = %v, exit = %d", err, ExitCode(err))
 	}
 
 	missing := filepath.Join(t.TempDir(), "missing.json")
@@ -214,11 +204,30 @@ func TestAuthTokensImport_ErrorsAndStdin(t *testing.T) {
 	}
 	if err := (&AuthTokensImportCmd{InPath: badDate}).Run(ctx, &RootFlags{}); err == nil {
 		t.Fatalf("expected date parse error")
+	} else if ExitCode(err) != 2 || !strings.Contains(err.Error(), "invalid created_at") {
+		t.Fatalf("created_at error = %v, exit = %d", err, ExitCode(err))
+	}
+	if err := (&AuthTokensImportCmd{InPath: badDate}).Run(ctx, &RootFlags{DryRun: true}); err == nil {
+		t.Fatalf("expected dry-run date parse error")
+	} else if ExitCode(err) != 2 {
+		t.Fatalf("dry-run created_at exit = %d, err = %v", ExitCode(err), err)
 	}
 
-	ensureKeychainAccess = func() error { return nil }
+	badExpiry := filepath.Join(t.TempDir(), "bad-expiry.json")
+	if err := os.WriteFile(badExpiry, []byte(`{"email":"a@b.com","refresh_token":"rt","access_token_expires_at":"bad"}`), 0o600); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+	if err := (&AuthTokensImportCmd{InPath: badExpiry}).Run(ctx, &RootFlags{}); err == nil {
+		t.Fatalf("expected access-token expiry parse error")
+	} else if ExitCode(err) != 2 || !strings.Contains(err.Error(), "invalid access_token_expires_at") {
+		t.Fatalf("access_token_expires_at error = %v, exit = %d", err, ExitCode(err))
+	}
+
 	store := newMemStore()
-	openSecretsStore = func() (secrets.Store, error) { return store, nil }
+	ctx = withAuthOperations(ctx, app.AuthOperations{
+		OpenSecretsStore:     func() (secrets.Store, error) { return store, nil },
+		EnsureKeychainAccess: func(context.Context) error { return nil },
+	})
 
 	in := `{"email":"a@b.com","refresh_token":"rt"}`
 	withStdin(t, in, func() {
@@ -229,29 +238,23 @@ func TestAuthTokensImport_ErrorsAndStdin(t *testing.T) {
 }
 
 func TestAuthAdd_TextOutput(t *testing.T) {
-	origOpen := openSecretsStore
-	origAuth := authorizeGoogle
-	origKeychain := ensureKeychainAccess
-	origFetch := fetchAuthorizedEmail
-	t.Cleanup(func() {
-		openSecretsStore = origOpen
-		authorizeGoogle = origAuth
-		ensureKeychainAccess = origKeychain
-		fetchAuthorizedEmail = origFetch
-	})
-
 	store := newMemStore()
-	openSecretsStore = func() (secrets.Store, error) { return store, nil }
-	authorizeGoogle = func(context.Context, googleauth.AuthorizeOptions) (string, error) { return "rt", nil }
-	fetchAuthorizedEmail = func(context.Context, string, string, []string, time.Duration) (string, error) { return "a@b.com", nil }
-	ensureKeychainAccess = func() error { return nil }
 
 	var outBuf strings.Builder
 	u, uiErr := ui.New(ui.Options{Stdout: &outBuf, Stderr: io.Discard, Color: "never"})
 	if uiErr != nil {
 		t.Fatalf("ui.New: %v", uiErr)
 	}
-	ctx := ui.WithUI(context.Background(), u)
+	ctx := withAuthOperations(ui.WithUI(context.Background(), u), app.AuthOperations{
+		OpenSecretsStore: func() (secrets.Store, error) { return store, nil },
+		AuthorizeGoogle: func(context.Context, googleauth.AuthorizeOptions) (string, error) {
+			return "rt", nil
+		},
+		FetchAuthorizedIdentity: func(context.Context, string, string, []string, time.Duration) (googleauth.Identity, error) {
+			return googleauth.Identity{Email: "a@b.com"}, nil
+		},
+		EnsureKeychainAccess: func(context.Context) error { return nil },
+	})
 
 	if err := (&AuthAddCmd{Email: "a@b.com", ServicesCSV: "gmail"}).Run(ctx, &RootFlags{}); err != nil {
 		t.Fatalf("add: %v", err)
@@ -293,11 +296,7 @@ func TestAuthKeep_Errors(t *testing.T) {
 }
 
 func TestAuthTokensExport_UsesCreatedAt(t *testing.T) {
-	origOpen := openSecretsStore
-	t.Cleanup(func() { openSecretsStore = origOpen })
-
 	store := newMemStore()
-	openSecretsStore = func() (secrets.Store, error) { return store, nil }
 	_ = store.SetToken(config.DefaultClientName, "a@b.com", secrets.Token{
 		Email:        "a@b.com",
 		RefreshToken: "rt",
@@ -308,7 +307,7 @@ func TestAuthTokensExport_UsesCreatedAt(t *testing.T) {
 	if uiErr != nil {
 		t.Fatalf("ui.New: %v", uiErr)
 	}
-	ctx := ui.WithUI(context.Background(), u)
+	ctx := withAuthStore(ui.WithUI(context.Background(), u), store)
 
 	outPath := filepath.Join(t.TempDir(), "tok.json")
 	if err := (&AuthTokensExportCmd{Email: "a@b.com", Output: OutputPathRequiredFlag{Path: outPath}, Overwrite: true}).Run(ctx, &RootFlags{}); err != nil {

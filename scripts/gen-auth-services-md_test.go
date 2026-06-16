@@ -5,6 +5,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/steipete/gogcli/internal/googleauth"
 )
 
 func TestMainUpdatesReadme(t *testing.T) {
@@ -37,4 +39,41 @@ func TestMainUpdatesReadme(t *testing.T) {
 	if !strings.Contains(text, "|") {
 		t.Fatalf("expected markdown table: %q", text)
 	}
+}
+
+func TestReadmeAuthServicesBlockIsFresh(t *testing.T) {
+	readmePath := filepath.Join("..", "README.md")
+
+	data, err := os.ReadFile(readmePath)
+	if err != nil {
+		t.Fatalf("read %s: %v", readmePath, err)
+	}
+
+	got, ok := authServicesBlock(string(data))
+	if !ok {
+		t.Fatalf("missing auth services markers in %s", readmePath)
+	}
+
+	want := strings.TrimRight(googleauth.ServicesMarkdown(googleauth.ServicesInfo()), "\n")
+	if got != want {
+		t.Fatalf("README auth services block is stale; run go run ./scripts/gen-auth-services-md.go")
+	}
+}
+
+func authServicesBlock(content string) (string, bool) {
+	content = strings.ReplaceAll(content, "\r\n", "\n")
+
+	start := strings.Index(content, startMarker)
+	end := strings.Index(content, endMarker)
+
+	if start == -1 || end == -1 || end < start {
+		return "", false
+	}
+
+	start += len(startMarker)
+	block := content[start:end]
+	block = strings.TrimPrefix(block, "\n")
+	block = strings.TrimSuffix(block, "\n")
+
+	return block, true
 }

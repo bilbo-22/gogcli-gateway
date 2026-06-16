@@ -3,6 +3,7 @@ package cmd
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -51,6 +52,26 @@ func newCommentsTestServer(t *testing.T) *httptest.Server {
 						"content":     "LGTM",
 						"createdTime": "2025-06-01T09:00:00Z",
 						"resolved":    true,
+					},
+				},
+			})
+			return
+
+		// List comments with modified-time filter.
+		case r.Method == http.MethodGet && path == "/files/doc-since/comments":
+			if r.URL.Query().Get("startModifiedTime") != "2026-06-04T10:00:00Z" {
+				t.Fatalf("expected startModifiedTime, got: %q", r.URL.RawQuery)
+			}
+			w.Header().Set("Content-Type", "application/json")
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"comments": []map[string]any{
+					{
+						"id":           "c-since",
+						"author":       map[string]any{"displayName": "Alice"},
+						"content":      "Fresh",
+						"createdTime":  "2026-06-04T10:00:01Z",
+						"modifiedTime": "2026-06-04T10:00:01Z",
+						"resolved":     false,
 					},
 				},
 			})
@@ -170,10 +191,8 @@ func newCommentsTestServer(t *testing.T) *httptest.Server {
 	}))
 }
 
-func setupDriveServiceFromServer(t *testing.T, srv *httptest.Server) {
+func driveServiceFromServer(t *testing.T, srv *httptest.Server) *drive.Service {
 	t.Helper()
-	origNew := newDriveService
-	t.Cleanup(func() { newDriveService = origNew })
 
 	svc, err := drive.NewService(context.Background(),
 		option.WithoutAuthentication(),
@@ -183,29 +202,25 @@ func setupDriveServiceFromServer(t *testing.T, srv *httptest.Server) {
 	if err != nil {
 		t.Fatalf("NewService: %v", err)
 	}
-	newDriveService = func(context.Context, string) (*drive.Service, error) { return svc, nil }
+	return svc
 }
 
 func TestDocsCommentsList_FiltersResolved(t *testing.T) {
 	srv := newCommentsTestServer(t)
 	defer srv.Close()
-	setupDriveServiceFromServer(t, srv)
+	svc := driveServiceFromServer(t, srv)
 
-	// Default: open only
-	jsonOut := captureStdout(t, func() {
-		_ = captureStderr(t, func() {
-			if err := Execute([]string{"--json", "--account", "a@b.com", "docs", "comments", "list", "doc1"}); err != nil {
-				t.Fatalf("Execute: %v", err)
-			}
-		})
-	})
+	result := executeWithDriveTestService(t, []string{"--json", "--account", "a@b.com", "docs", "comments", "list", "doc1"}, svc)
+	if result.err != nil {
+		t.Fatalf("Execute: %v", result.err)
+	}
 
 	var parsed struct {
 		DocID    string           `json:"docId"`
 		Comments []*drive.Comment `json:"comments"`
 	}
-	if err := json.Unmarshal([]byte(jsonOut), &parsed); err != nil {
-		t.Fatalf("json parse: %v\nout=%q", err, jsonOut)
+	if err := json.Unmarshal([]byte(result.stdout), &parsed); err != nil {
+		t.Fatalf("json parse: %v\nout=%q", err, result.stdout)
 	}
 	if parsed.DocID != "doc1" {
 		t.Fatalf("expected docId=doc1, got %q", parsed.DocID)
@@ -222,39 +237,55 @@ func TestDocsCommentsList_FiltersResolved(t *testing.T) {
 func TestDocsCommentsList_IncludeResolved(t *testing.T) {
 	srv := newCommentsTestServer(t)
 	defer srv.Close()
-	setupDriveServiceFromServer(t, srv)
+	svc := driveServiceFromServer(t, srv)
 
-	jsonOut := captureStdout(t, func() {
-		_ = captureStderr(t, func() {
-			if err := Execute([]string{"--json", "--account", "a@b.com", "docs", "comments", "list", "--include-resolved", "doc1"}); err != nil {
-				t.Fatalf("Execute: %v", err)
-			}
-		})
-	})
+	result := executeWithDriveTestService(t, []string{"--json", "--account", "a@b.com", "docs", "comments", "list", "--include-resolved", "doc1"}, svc)
+	if result.err != nil {
+		t.Fatalf("Execute: %v", result.err)
+	}
 
 	var parsed struct {
 		Comments []*drive.Comment `json:"comments"`
 	}
-	if err := json.Unmarshal([]byte(jsonOut), &parsed); err != nil {
-		t.Fatalf("json parse: %v\nout=%q", err, jsonOut)
+	if err := json.Unmarshal([]byte(result.stdout), &parsed); err != nil {
+		t.Fatalf("json parse: %v\nout=%q", err, result.stdout)
 	}
 	if len(parsed.Comments) != 2 {
 		t.Fatalf("expected 2 comments with --include-resolved, got %d", len(parsed.Comments))
 	}
 }
 
+func TestDocsCommentsList_Since(t *testing.T) {
+	srv := newCommentsTestServer(t)
+	defer srv.Close()
+	svc := driveServiceFromServer(t, srv)
+
+	result := executeWithDriveTestService(t, []string{"--json", "--account", "a@b.com", "docs", "comments", "list", "--since", "2026-06-04T10:00:00Z", "doc-since"}, svc)
+	if result.err != nil {
+		t.Fatalf("Execute: %v", result.err)
+	}
+
+	var parsed struct {
+		Comments []*drive.Comment `json:"comments"`
+	}
+	if err := json.Unmarshal([]byte(result.stdout), &parsed); err != nil {
+		t.Fatalf("json parse: %v\nout=%q", err, result.stdout)
+	}
+	if len(parsed.Comments) != 1 || parsed.Comments[0].Id != "c-since" {
+		t.Fatalf("unexpected comments: %#v", parsed.Comments)
+	}
+}
+
 func TestDocsCommentsList_PlainText(t *testing.T) {
 	srv := newCommentsTestServer(t)
 	defer srv.Close()
-	setupDriveServiceFromServer(t, srv)
+	svc := driveServiceFromServer(t, srv)
 
-	out := captureStdout(t, func() {
-		_ = captureStderr(t, func() {
-			if err := Execute([]string{"--account", "a@b.com", "docs", "comments", "list", "doc1"}); err != nil {
-				t.Fatalf("Execute: %v", err)
-			}
-		})
-	})
+	result := executeWithDriveTestService(t, []string{"--account", "a@b.com", "docs", "comments", "list", "doc1"}, svc)
+	if result.err != nil {
+		t.Fatalf("Execute: %v", result.err)
+	}
+	out := result.stdout
 	if !strings.Contains(out, "Alice") {
 		t.Fatalf("expected author Alice in output, got: %q", out)
 	}
@@ -276,21 +307,18 @@ func TestDocsCommentsList_PlainText(t *testing.T) {
 func TestDocsCommentsList_ScansPagesForOpenComments(t *testing.T) {
 	srv := newCommentsTestServer(t)
 	defer srv.Close()
-	setupDriveServiceFromServer(t, srv)
+	svc := driveServiceFromServer(t, srv)
 
-	jsonOut := captureStdout(t, func() {
-		_ = captureStderr(t, func() {
-			if err := Execute([]string{"--json", "--account", "a@b.com", "docs", "comments", "list", "scan"}); err != nil {
-				t.Fatalf("Execute: %v", err)
-			}
-		})
-	})
+	result := executeWithDriveTestService(t, []string{"--json", "--account", "a@b.com", "docs", "comments", "list", "scan"}, svc)
+	if result.err != nil {
+		t.Fatalf("Execute: %v", result.err)
+	}
 
 	var parsed struct {
 		Comments []*drive.Comment `json:"comments"`
 	}
-	if err := json.Unmarshal([]byte(jsonOut), &parsed); err != nil {
-		t.Fatalf("json parse: %v\nout=%q", err, jsonOut)
+	if err := json.Unmarshal([]byte(result.stdout), &parsed); err != nil {
+		t.Fatalf("json parse: %v\nout=%q", err, result.stdout)
 	}
 	if len(parsed.Comments) != 1 || parsed.Comments[0].Id != "c-open" {
 		t.Fatalf("expected scan to return open comment, got %#v", parsed.Comments)
@@ -300,36 +328,32 @@ func TestDocsCommentsList_ScansPagesForOpenComments(t *testing.T) {
 func TestDocsCommentsList_Empty(t *testing.T) {
 	srv := newCommentsTestServer(t)
 	defer srv.Close()
-	setupDriveServiceFromServer(t, srv)
+	svc := driveServiceFromServer(t, srv)
 
-	errOut := captureStderr(t, func() {
-		if err := Execute([]string{"--account", "a@b.com", "docs", "comments", "list", "empty"}); err != nil {
-			t.Fatalf("Execute: %v", err)
-		}
-	})
-	if !strings.Contains(errOut, "No comments") {
-		t.Fatalf("expected 'No comments' in stderr, got: %q", errOut)
+	result := executeWithDriveTestService(t, []string{"--account", "a@b.com", "docs", "comments", "list", "empty"}, svc)
+	if result.err != nil {
+		t.Fatalf("Execute: %v", result.err)
+	}
+	if !strings.Contains(result.stderr, "No comments") {
+		t.Fatalf("expected 'No comments' in stderr, got: %q", result.stderr)
 	}
 }
 
 func TestDocsCommentsGet_JSON(t *testing.T) {
 	srv := newCommentsTestServer(t)
 	defer srv.Close()
-	setupDriveServiceFromServer(t, srv)
+	svc := driveServiceFromServer(t, srv)
 
-	jsonOut := captureStdout(t, func() {
-		_ = captureStderr(t, func() {
-			if err := Execute([]string{"--json", "--account", "a@b.com", "docs", "comments", "get", "doc1", "c1"}); err != nil {
-				t.Fatalf("Execute: %v", err)
-			}
-		})
-	})
+	result := executeWithDriveTestService(t, []string{"--json", "--account", "a@b.com", "docs", "comments", "get", "doc1", "c1"}, svc)
+	if result.err != nil {
+		t.Fatalf("Execute: %v", result.err)
+	}
 
 	var parsed struct {
 		Comment *drive.Comment `json:"comment"`
 	}
-	if err := json.Unmarshal([]byte(jsonOut), &parsed); err != nil {
-		t.Fatalf("json parse: %v\nout=%q", err, jsonOut)
+	if err := json.Unmarshal([]byte(result.stdout), &parsed); err != nil {
+		t.Fatalf("json parse: %v\nout=%q", err, result.stdout)
 	}
 	if parsed.Comment == nil || parsed.Comment.Id != "c1" {
 		t.Fatalf("unexpected comment: %#v", parsed.Comment)
@@ -342,15 +366,13 @@ func TestDocsCommentsGet_JSON(t *testing.T) {
 func TestDocsCommentsGet_Plain(t *testing.T) {
 	srv := newCommentsTestServer(t)
 	defer srv.Close()
-	setupDriveServiceFromServer(t, srv)
+	svc := driveServiceFromServer(t, srv)
 
-	out := captureStdout(t, func() {
-		_ = captureStderr(t, func() {
-			if err := Execute([]string{"--account", "a@b.com", "docs", "comments", "get", "doc1", "c1"}); err != nil {
-				t.Fatalf("Execute: %v", err)
-			}
-		})
-	})
+	result := executeWithDriveTestService(t, []string{"--account", "a@b.com", "docs", "comments", "get", "doc1", "c1"}, svc)
+	if result.err != nil {
+		t.Fatalf("Execute: %v", result.err)
+	}
+	out := result.stdout
 	if !strings.Contains(out, "Alice") {
 		t.Fatalf("expected author in output: %q", out)
 	}
@@ -368,21 +390,18 @@ func TestDocsCommentsGet_Plain(t *testing.T) {
 func TestDocsCommentsAdd_JSON(t *testing.T) {
 	srv := newCommentsTestServer(t)
 	defer srv.Close()
-	setupDriveServiceFromServer(t, srv)
+	svc := driveServiceFromServer(t, srv)
 
-	jsonOut := captureStdout(t, func() {
-		_ = captureStderr(t, func() {
-			if err := Execute([]string{"--json", "--account", "a@b.com", "docs", "comments", "add", "doc1", "Nice work", "--quoted", "some text", "--anchor", "{\"a\":1}"}); err != nil {
-				t.Fatalf("Execute: %v", err)
-			}
-		})
-	})
+	result := executeWithDriveTestService(t, []string{"--json", "--account", "a@b.com", "docs", "comments", "add", "doc1", "Nice work", "--quoted", "some text", "--anchor", "{\"a\":1}"}, svc)
+	if result.err != nil {
+		t.Fatalf("Execute: %v", result.err)
+	}
 
 	var parsed struct {
 		Comment *drive.Comment `json:"comment"`
 	}
-	if err := json.Unmarshal([]byte(jsonOut), &parsed); err != nil {
-		t.Fatalf("json parse: %v\nout=%q", err, jsonOut)
+	if err := json.Unmarshal([]byte(result.stdout), &parsed); err != nil {
+		t.Fatalf("json parse: %v\nout=%q", err, result.stdout)
 	}
 	if parsed.Comment == nil || parsed.Comment.Id != "c3" {
 		t.Fatalf("unexpected comment: %#v", parsed.Comment)
@@ -395,41 +414,56 @@ func TestDocsCommentsAdd_JSON(t *testing.T) {
 	}
 }
 
+func TestDocsCommentsAdd_InvalidAnchorFailsBeforeDryRun(t *testing.T) {
+	factory := func(context.Context, string) (*drive.Service, error) {
+		t.Fatalf("expected validation to fail before creating drive service")
+		return nil, errors.New("unexpected drive service call")
+	}
+
+	testCases := [][]string{
+		{"--account", "a@b.com", "--dry-run", "docs", "comments", "add", "doc1", "Nice work", "--anchor", "nope"},
+		{"--account", "a@b.com", "--dry-run", "docs", "comments", "add", "doc1", "Nice work", "--anchor", "{\"a\":1"},
+	}
+	for _, args := range testCases {
+		t.Run(strings.Join(args[4:], "_"), func(t *testing.T) {
+			result := executeWithDriveTestServiceFactory(t, args, factory)
+			var exitErr *ExitError
+			if !errors.As(result.err, &exitErr) || exitErr.Code != 2 || !strings.Contains(result.err.Error(), "invalid --anchor JSON") {
+				t.Fatalf("unexpected err: %v", result.err)
+			}
+		})
+	}
+}
+
 func TestDocsCommentsAdd_Plain(t *testing.T) {
 	srv := newCommentsTestServer(t)
 	defer srv.Close()
-	setupDriveServiceFromServer(t, srv)
+	svc := driveServiceFromServer(t, srv)
 
-	out := captureStdout(t, func() {
-		_ = captureStderr(t, func() {
-			if err := Execute([]string{"--account", "a@b.com", "docs", "comments", "add", "doc1", "A comment"}); err != nil {
-				t.Fatalf("Execute: %v", err)
-			}
-		})
-	})
-	if !strings.Contains(out, "c3") {
-		t.Fatalf("expected comment ID in output: %q", out)
+	result := executeWithDriveTestService(t, []string{"--account", "a@b.com", "docs", "comments", "add", "doc1", "A comment"}, svc)
+	if result.err != nil {
+		t.Fatalf("Execute: %v", result.err)
+	}
+	if !strings.Contains(result.stdout, "c3") {
+		t.Fatalf("expected comment ID in output: %q", result.stdout)
 	}
 }
 
 func TestDocsCommentsReply_JSON(t *testing.T) {
 	srv := newCommentsTestServer(t)
 	defer srv.Close()
-	setupDriveServiceFromServer(t, srv)
+	svc := driveServiceFromServer(t, srv)
 
-	jsonOut := captureStdout(t, func() {
-		_ = captureStderr(t, func() {
-			if err := Execute([]string{"--json", "--account", "a@b.com", "docs", "comments", "reply", "doc1", "c1", "Thanks!"}); err != nil {
-				t.Fatalf("Execute: %v", err)
-			}
-		})
-	})
+	result := executeWithDriveTestService(t, []string{"--json", "--account", "a@b.com", "docs", "comments", "reply", "doc1", "c1", "Thanks!"}, svc)
+	if result.err != nil {
+		t.Fatalf("Execute: %v", result.err)
+	}
 
 	var parsed struct {
 		Reply *drive.Reply `json:"reply"`
 	}
-	if err := json.Unmarshal([]byte(jsonOut), &parsed); err != nil {
-		t.Fatalf("json parse: %v\nout=%q", err, jsonOut)
+	if err := json.Unmarshal([]byte(result.stdout), &parsed); err != nil {
+		t.Fatalf("json parse: %v\nout=%q", err, result.stdout)
 	}
 	if parsed.Reply == nil || parsed.Reply.Id != "r2" {
 		t.Fatalf("unexpected reply: %#v", parsed.Reply)
@@ -439,23 +473,20 @@ func TestDocsCommentsReply_JSON(t *testing.T) {
 func TestDocsCommentsResolve_JSON(t *testing.T) {
 	srv := newCommentsTestServer(t)
 	defer srv.Close()
-	setupDriveServiceFromServer(t, srv)
+	svc := driveServiceFromServer(t, srv)
 
-	jsonOut := captureStdout(t, func() {
-		_ = captureStderr(t, func() {
-			if err := Execute([]string{"--json", "--account", "a@b.com", "docs", "comments", "resolve", "doc1", "c1"}); err != nil {
-				t.Fatalf("Execute: %v", err)
-			}
-		})
-	})
+	result := executeWithDriveTestService(t, []string{"--json", "--account", "a@b.com", "docs", "comments", "resolve", "doc1", "c1"}, svc)
+	if result.err != nil {
+		t.Fatalf("Execute: %v", result.err)
+	}
 
 	var parsed struct {
 		Resolved  bool   `json:"resolved"`
 		DocID     string `json:"docId"`
 		CommentID string `json:"commentId"`
 	}
-	if err := json.Unmarshal([]byte(jsonOut), &parsed); err != nil {
-		t.Fatalf("json parse: %v\nout=%q", err, jsonOut)
+	if err := json.Unmarshal([]byte(result.stdout), &parsed); err != nil {
+		t.Fatalf("json parse: %v\nout=%q", err, result.stdout)
 	}
 	if !parsed.Resolved || parsed.DocID != "doc1" || parsed.CommentID != "c1" {
 		t.Fatalf("unexpected resolve output: %#v", parsed)
@@ -465,23 +496,20 @@ func TestDocsCommentsResolve_JSON(t *testing.T) {
 func TestDocsCommentsDelete_JSON(t *testing.T) {
 	srv := newCommentsTestServer(t)
 	defer srv.Close()
-	setupDriveServiceFromServer(t, srv)
+	svc := driveServiceFromServer(t, srv)
 
-	jsonOut := captureStdout(t, func() {
-		_ = captureStderr(t, func() {
-			if err := Execute([]string{"--json", "--force", "--account", "a@b.com", "docs", "comments", "delete", "doc1", "c1"}); err != nil {
-				t.Fatalf("Execute: %v", err)
-			}
-		})
-	})
+	result := executeWithDriveTestService(t, []string{"--json", "--force", "--account", "a@b.com", "docs", "comments", "delete", "doc1", "c1"}, svc)
+	if result.err != nil {
+		t.Fatalf("Execute: %v", result.err)
+	}
 
 	var parsed struct {
 		Deleted   bool   `json:"deleted"`
 		DocID     string `json:"docId"`
 		CommentID string `json:"commentId"`
 	}
-	if err := json.Unmarshal([]byte(jsonOut), &parsed); err != nil {
-		t.Fatalf("json parse: %v\nout=%q", err, jsonOut)
+	if err := json.Unmarshal([]byte(result.stdout), &parsed); err != nil {
+		t.Fatalf("json parse: %v\nout=%q", err, result.stdout)
 	}
 	if !parsed.Deleted || parsed.DocID != "doc1" || parsed.CommentID != "c1" {
 		t.Fatalf("unexpected delete output: %#v", parsed)
@@ -498,6 +526,9 @@ func TestDocsComments_ValidationErrors(t *testing.T) {
 
 	if err := (&DocsCommentsListCmd{}).Run(ctx, flags); err == nil {
 		t.Fatal("expected list missing docId error")
+	}
+	if err := (&DocsCommentsListCmd{DocID: "d1", Max: 1, Since: "2026-06-04T10:00:00"}).Run(ctx, flags); err == nil {
+		t.Fatal("expected list invalid since error")
 	}
 	if err := (&DocsCommentsGetCmd{}).Run(ctx, flags); err == nil {
 		t.Fatal("expected get missing docId error")

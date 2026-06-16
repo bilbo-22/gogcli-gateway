@@ -1,16 +1,8 @@
 package cmd
 
 import (
-	"context"
-	"io"
 	"strings"
 	"testing"
-
-	"google.golang.org/api/docs/v1"
-	"google.golang.org/api/option"
-
-	"github.com/steipete/gogcli/internal/outfmt"
-	"github.com/steipete/gogcli/internal/ui"
 )
 
 // =============================================================================
@@ -31,20 +23,9 @@ func TestSedIntegration_EmptyDocID(t *testing.T) {
 	srv := mockDocsServerAdvanced(t, doc, nil)
 	defer srv.Close()
 
-	origNewDocs := newDocsService
-	newDocsService = func(ctx context.Context, account string) (*docs.Service, error) {
-		return docs.NewService(ctx,
-			option.WithoutAuthentication(),
-			option.WithEndpoint(srv.URL+"/"),
-		)
-	}
-	defer func() { newDocsService = origNewDocs }()
-
-	u, _ := ui.New(ui.Options{Stdout: io.Discard, Stderr: io.Discard, Color: "never"})
-	ctx := outfmt.WithMode(ui.WithUI(context.Background(), u), outfmt.Mode{JSON: true})
 	cmd := &DocsSedCmd{DocID: "", Expression: "s/a/b/"}
 	flags := &RootFlags{Account: "test@example.com"}
-	err := cmd.Run(ctx, flags)
+	err := cmd.Run(newSedIntegrationContext(t, srv), flags)
 	if err == nil {
 		t.Error("expected error for empty doc ID")
 	}
@@ -56,20 +37,9 @@ func TestSedIntegration_NoExpression(t *testing.T) {
 	srv := mockDocsServerAdvanced(t, doc, nil)
 	defer srv.Close()
 
-	origNewDocs := newDocsService
-	newDocsService = func(ctx context.Context, account string) (*docs.Service, error) {
-		return docs.NewService(ctx,
-			option.WithoutAuthentication(),
-			option.WithEndpoint(srv.URL+"/"),
-		)
-	}
-	defer func() { newDocsService = origNewDocs }()
-
-	u, _ := ui.New(ui.Options{Stdout: io.Discard, Stderr: io.Discard, Color: "never"})
-	ctx := outfmt.WithMode(ui.WithUI(context.Background(), u), outfmt.Mode{JSON: true})
 	cmd := &DocsSedCmd{DocID: "test-doc-id"}
 	flags := &RootFlags{Account: "test@example.com"}
-	err := cmd.Run(ctx, flags)
+	err := cmd.Run(newSedIntegrationContext(t, srv), flags)
 	if err == nil {
 		t.Error("expected error for no expressions")
 	}
@@ -152,7 +122,7 @@ func TestSedIntegration_MarkdownBulletToPlain(t *testing.T) {
 
 func TestSedIntegration_LongDocument(t *testing.T) {
 	// Build a document with many paragraphs
-	paras := make([]docParagraph, 50)
+	paras := make([]testDocParagraph, 50)
 	for i := range paras {
 		if i%5 == 0 {
 			paras[i] = para(plain("Replace this target word here"))

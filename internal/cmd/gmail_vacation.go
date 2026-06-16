@@ -2,8 +2,6 @@ package cmd
 
 import (
 	"context"
-	"errors"
-	"os"
 	"time"
 
 	"github.com/alecthomas/kong"
@@ -27,7 +25,7 @@ func (c *GmailVacationGetCmd) Run(ctx context.Context, flags *RootFlags) error {
 		return err
 	}
 
-	svc, err := newGmailService(ctx, account)
+	svc, err := gmailService(ctx, account)
 	if err != nil {
 		return err
 	}
@@ -38,21 +36,21 @@ func (c *GmailVacationGetCmd) Run(ctx context.Context, flags *RootFlags) error {
 	}
 
 	if outfmt.IsJSON(ctx) {
-		return outfmt.WriteJSON(ctx, os.Stdout, map[string]any{"vacation": vacation})
+		return outfmt.WriteJSON(ctx, stdoutWriter(ctx), map[string]any{"vacation": vacation})
 	}
 
-	u.Out().Printf("enable_auto_reply\t%t", vacation.EnableAutoReply)
-	u.Out().Printf("response_subject\t%s", vacation.ResponseSubject)
-	u.Out().Printf("response_body_html\t%s", vacation.ResponseBodyHtml)
-	u.Out().Printf("response_body_plain_text\t%s", vacation.ResponseBodyPlainText)
+	u.Out().Linef("enable_auto_reply\t%t", vacation.EnableAutoReply)
+	u.Out().Linef("response_subject\t%s", vacation.ResponseSubject)
+	u.Out().Linef("response_body_html\t%s", vacation.ResponseBodyHtml)
+	u.Out().Linef("response_body_plain_text\t%s", vacation.ResponseBodyPlainText)
 	if vacation.StartTime != 0 {
-		u.Out().Printf("start_time\t%d", vacation.StartTime)
+		u.Out().Linef("start_time\t%d", vacation.StartTime)
 	}
 	if vacation.EndTime != 0 {
-		u.Out().Printf("end_time\t%d", vacation.EndTime)
+		u.Out().Linef("end_time\t%d", vacation.EndTime)
 	}
-	u.Out().Printf("restrict_to_contacts\t%t", vacation.RestrictToContacts)
-	u.Out().Printf("restrict_to_domain\t%t", vacation.RestrictToDomain)
+	u.Out().Linef("restrict_to_contacts\t%t", vacation.RestrictToContacts)
+	u.Out().Linef("restrict_to_domain\t%t", vacation.RestrictToDomain)
 	return nil
 }
 
@@ -70,7 +68,7 @@ type GmailVacationUpdateCmd struct {
 func (c *GmailVacationUpdateCmd) Run(ctx context.Context, kctx *kong.Context, flags *RootFlags) error {
 	u := ui.FromContext(ctx)
 	if c.Enable && c.Disable {
-		return errors.New("cannot specify both --enable and --disable")
+		return usage("cannot specify both --enable and --disable")
 	}
 
 	var err error
@@ -92,7 +90,7 @@ func (c *GmailVacationUpdateCmd) Run(ctx context.Context, kctx *kong.Context, fl
 		var t int64
 		t, err = parseRFC3339ToMillis(c.Start)
 		if err != nil {
-			return err
+			return usagef("invalid --start %q (expected RFC3339)", c.Start)
 		}
 		updates["start_time"] = t
 	}
@@ -100,7 +98,7 @@ func (c *GmailVacationUpdateCmd) Run(ctx context.Context, kctx *kong.Context, fl
 		var t int64
 		t, err = parseRFC3339ToMillis(c.End)
 		if err != nil {
-			return err
+			return usagef("invalid --end %q (expected RFC3339)", c.End)
 		}
 		updates["end_time"] = t
 	}
@@ -122,7 +120,7 @@ func (c *GmailVacationUpdateCmd) Run(ctx context.Context, kctx *kong.Context, fl
 		return err
 	}
 
-	svc, err := newGmailService(ctx, account)
+	svc, err := gmailService(ctx, account)
 	if err != nil {
 		return err
 	}
@@ -163,7 +161,7 @@ func (c *GmailVacationUpdateCmd) Run(ctx context.Context, kctx *kong.Context, fl
 		var t int64
 		t, err = parseRFC3339ToMillis(c.Start)
 		if err != nil {
-			return err
+			return usagef("invalid --start %q (expected RFC3339)", c.Start)
 		}
 		vacation.StartTime = t
 	}
@@ -171,7 +169,7 @@ func (c *GmailVacationUpdateCmd) Run(ctx context.Context, kctx *kong.Context, fl
 		var t int64
 		t, err = parseRFC3339ToMillis(c.End)
 		if err != nil {
-			return err
+			return usagef("invalid --end %q (expected RFC3339)", c.End)
 		}
 		vacation.EndTime = t
 	}
@@ -188,20 +186,20 @@ func (c *GmailVacationUpdateCmd) Run(ctx context.Context, kctx *kong.Context, fl
 	}
 
 	if outfmt.IsJSON(ctx) {
-		return outfmt.WriteJSON(ctx, os.Stdout, map[string]any{"vacation": updated})
+		return outfmt.WriteJSON(ctx, stdoutWriter(ctx), map[string]any{"vacation": updated})
 	}
 
 	u.Out().Println("Vacation responder updated successfully")
-	u.Out().Printf("enable_auto_reply\t%t", updated.EnableAutoReply)
-	u.Out().Printf("response_subject\t%s", updated.ResponseSubject)
+	u.Out().Linef("enable_auto_reply\t%t", updated.EnableAutoReply)
+	u.Out().Linef("response_subject\t%s", updated.ResponseSubject)
 	if updated.StartTime != 0 {
-		u.Out().Printf("start_time\t%d", updated.StartTime)
+		u.Out().Linef("start_time\t%d", updated.StartTime)
 	}
 	if updated.EndTime != 0 {
-		u.Out().Printf("end_time\t%d", updated.EndTime)
+		u.Out().Linef("end_time\t%d", updated.EndTime)
 	}
-	u.Out().Printf("restrict_to_contacts\t%t", updated.RestrictToContacts)
-	u.Out().Printf("restrict_to_domain\t%t", updated.RestrictToDomain)
+	u.Out().Linef("restrict_to_contacts\t%t", updated.RestrictToContacts)
+	u.Out().Linef("restrict_to_domain\t%t", updated.RestrictToDomain)
 	return nil
 }
 

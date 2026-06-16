@@ -3,7 +3,6 @@ package cmd
 import (
 	"context"
 	"fmt"
-	"os"
 	"strings"
 
 	"google.golang.org/api/tasks/v1"
@@ -26,12 +25,15 @@ type TasksListsListCmd struct {
 
 func (c *TasksListsListCmd) Run(ctx context.Context, flags *RootFlags) error {
 	u := ui.FromContext(ctx)
+	if c.Max <= 0 {
+		return usage("max must be > 0")
+	}
 	account, err := requireAccount(flags)
 	if err != nil {
 		return err
 	}
 
-	svc, err := newTasksService(ctx, account)
+	svc, err := tasksService(ctx, account)
 	if err != nil {
 		return err
 	}
@@ -41,31 +43,20 @@ func (c *TasksListsListCmd) Run(ctx context.Context, flags *RootFlags) error {
 		if strings.TrimSpace(pageToken) != "" {
 			call = call.PageToken(pageToken)
 		}
-		resp, err := call.Do()
-		if err != nil {
-			return nil, "", err
+		resp, callErr := call.Do()
+		if callErr != nil {
+			return nil, "", callErr
 		}
 		return resp.Items, resp.NextPageToken, nil
 	}
 
-	var items []*tasks.TaskList
-	nextPageToken := ""
-	if c.All {
-		all, err := collectAllPages(c.Page, fetch)
-		if err != nil {
-			return err
-		}
-		items = all
-	} else {
-		var err error
-		items, nextPageToken, err = fetch(c.Page)
-		if err != nil {
-			return err
-		}
+	items, nextPageToken, err := loadPagedItems(c.Page, c.All, fetch)
+	if err != nil {
+		return err
 	}
 
 	if outfmt.IsJSON(ctx) {
-		if err := outfmt.WriteJSON(ctx, os.Stdout, map[string]any{
+		if err := outfmt.WriteJSON(ctx, stdoutWriter(ctx), map[string]any{
 			"tasklists":     items,
 			"nextPageToken": nextPageToken,
 		}); err != nil {
@@ -88,7 +79,7 @@ func (c *TasksListsListCmd) Run(ctx context.Context, flags *RootFlags) error {
 	for _, tl := range items {
 		fmt.Fprintf(w, "%s\t%s\n", tl.Id, tl.Title)
 	}
-	printNextPageHint(u, nextPageToken)
+	printNextPageHintWithAll(u, nextPageToken, "--all/--all-pages")
 	return nil
 }
 
@@ -114,7 +105,7 @@ func (c *TasksListsCreateCmd) Run(ctx context.Context, flags *RootFlags) error {
 		return err
 	}
 
-	svc, err := newTasksService(ctx, account)
+	svc, err := tasksService(ctx, account)
 	if err != nil {
 		return err
 	}
@@ -125,9 +116,9 @@ func (c *TasksListsCreateCmd) Run(ctx context.Context, flags *RootFlags) error {
 	}
 
 	if outfmt.IsJSON(ctx) {
-		return outfmt.WriteJSON(ctx, os.Stdout, map[string]any{"tasklist": created})
+		return outfmt.WriteJSON(ctx, stdoutWriter(ctx), map[string]any{"tasklist": created})
 	}
-	u.Out().Printf("id\t%s", created.Id)
-	u.Out().Printf("title\t%s", created.Title)
+	u.Out().Linef("id\t%s", created.Id)
+	u.Out().Linef("title\t%s", created.Title)
 	return nil
 }

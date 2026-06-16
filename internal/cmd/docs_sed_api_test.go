@@ -64,12 +64,9 @@ func sedTestUI() *ui.UI {
 	return u
 }
 
-// mockDocsService sets newDocsService to return the given service and restores on cleanup.
-func mockDocsService(t *testing.T, svc *docs.Service) {
+func mockDocsContext(t *testing.T, svc *docs.Service) context.Context {
 	t.Helper()
-	orig := newDocsService
-	newDocsService = func(context.Context, string) (*docs.Service, error) { return svc, nil }
-	t.Cleanup(func() { newDocsService = orig })
+	return withDocsTestService(newCmdRuntimeOutputContext(t, io.Discard, io.Discard), svc)
 }
 
 func TestRunDeleteCommand(t *testing.T) {
@@ -91,14 +88,14 @@ func TestRunDeleteCommand(t *testing.T) {
 	}
 	svc, cleanup := newSedTestServer(t, doc)
 	defer cleanup()
-	mockDocsService(t, svc)
+	ctx := mockDocsContext(t, svc)
 
 	cmd := &DocsSedCmd{}
 	u := sedTestUI()
 	expr, err := parseDCommand("d/delete/")
 	require.NoError(t, err)
 
-	err = cmd.runDeleteCommand(context.Background(), u, "", "test-doc", expr)
+	err = cmd.runDeleteCommand(ctx, u, "", "test-doc", expr)
 	assert.NoError(t, err)
 }
 
@@ -115,12 +112,12 @@ func TestRunDeleteCommand_NoMatch(t *testing.T) {
 	}
 	svc, cleanup := newSedTestServer(t, doc)
 	defer cleanup()
-	mockDocsService(t, svc)
+	ctx := mockDocsContext(t, svc)
 
 	cmd := &DocsSedCmd{}
 	u := sedTestUI()
 	expr, _ := parseDCommand("d/nonexistent/")
-	err := cmd.runDeleteCommand(context.Background(), u, "", "test-doc", expr)
+	err := cmd.runDeleteCommand(ctx, u, "", "test-doc", expr)
 	assert.NoError(t, err)
 }
 
@@ -137,19 +134,19 @@ func TestRunInsertAroundMatch(t *testing.T) {
 	}
 	svc, cleanup := newSedTestServer(t, doc)
 	defer cleanup()
-	mockDocsService(t, svc)
+	ctx := mockDocsContext(t, svc)
 
 	cmd := &DocsSedCmd{}
 	u := sedTestUI()
 
 	// Test append (after)
 	expr, _ := parseAICommand("a/target/new text/", 'a')
-	err := cmd.runAppendCommand(context.Background(), u, "", "test-doc", expr)
+	err := cmd.runAppendCommand(ctx, u, "", "test-doc", expr)
 	assert.NoError(t, err)
 
 	// Test insert (before)
 	expr, _ = parseAICommand("i/target/before text/", 'i')
-	err = cmd.runInsertCommand(context.Background(), u, "", "test-doc", expr)
+	err = cmd.runInsertCommand(ctx, u, "", "test-doc", expr)
 	assert.NoError(t, err)
 }
 
@@ -166,12 +163,12 @@ func TestRunInsertAroundMatch_NoMatch(t *testing.T) {
 	}
 	svc, cleanup := newSedTestServer(t, doc)
 	defer cleanup()
-	mockDocsService(t, svc)
+	ctx := mockDocsContext(t, svc)
 
 	cmd := &DocsSedCmd{}
 	u := sedTestUI()
 	expr, _ := parseAICommand("a/nope/text/", 'a')
-	err := cmd.runAppendCommand(context.Background(), u, "", "test-doc", expr)
+	err := cmd.runAppendCommand(ctx, u, "", "test-doc", expr)
 	assert.NoError(t, err) // no matches, but not an error
 }
 
@@ -188,12 +185,12 @@ func TestRunTransliterate(t *testing.T) {
 	}
 	svc, cleanup := newSedTestServer(t, doc)
 	defer cleanup()
-	mockDocsService(t, svc)
+	ctx := mockDocsContext(t, svc)
 
 	cmd := &DocsSedCmd{}
 	u := sedTestUI()
 	expr, _ := parseYCommand("y/helo/HELO/")
-	err := cmd.runTransliterate(context.Background(), u, "", "test-doc", expr)
+	err := cmd.runTransliterate(ctx, u, "", "test-doc", expr)
 	assert.NoError(t, err)
 }
 
@@ -210,12 +207,12 @@ func TestRunSingle_DeleteCommand(t *testing.T) {
 	}
 	svc, cleanup := newSedTestServer(t, doc)
 	defer cleanup()
-	mockDocsService(t, svc)
+	ctx := mockDocsContext(t, svc)
 
 	cmd := &DocsSedCmd{}
 	u := sedTestUI()
 	expr, _ := parseDCommand("d/target/")
-	err := cmd.runSingle(context.Background(), u, "", "test-doc", expr)
+	err := cmd.runSingle(ctx, u, "", "test-doc", expr)
 	assert.NoError(t, err)
 }
 
@@ -223,12 +220,12 @@ func TestRunSingle_NativeReplace(t *testing.T) {
 	doc := &docs.Document{DocumentId: "test-doc"}
 	svc, cleanup := newSedTestServer(t, doc)
 	defer cleanup()
-	mockDocsService(t, svc)
+	ctx := mockDocsContext(t, svc)
 
 	cmd := &DocsSedCmd{}
 	u := sedTestUI()
 	expr := sedExpr{pattern: "foo", replacement: "bar", global: true}
-	err := cmd.runSingle(context.Background(), u, "", "test-doc", expr)
+	err := cmd.runSingle(ctx, u, "", "test-doc", expr)
 	assert.NoError(t, err)
 }
 
@@ -245,12 +242,12 @@ func TestRunSingle_Manual(t *testing.T) {
 	}
 	svc, cleanup := newSedTestServer(t, doc)
 	defer cleanup()
-	mockDocsService(t, svc)
+	ctx := mockDocsContext(t, svc)
 
 	cmd := &DocsSedCmd{}
 	u := sedTestUI()
 	expr := sedExpr{pattern: "hello", replacement: "**goodbye**"}
-	err := cmd.runSingle(context.Background(), u, "", "test-doc", expr)
+	err := cmd.runSingle(ctx, u, "", "test-doc", expr)
 	assert.NoError(t, err)
 }
 
@@ -267,7 +264,7 @@ func TestRunBatch_Mixed(t *testing.T) {
 	}
 	svc, cleanup := newSedTestServer(t, doc)
 	defer cleanup()
-	mockDocsService(t, svc)
+	ctx := mockDocsContext(t, svc)
 
 	cmd := &DocsSedCmd{}
 	u := sedTestUI()
@@ -276,7 +273,7 @@ func TestRunBatch_Mixed(t *testing.T) {
 		{pattern: "foo", replacement: "bar", global: true}, // native
 		{pattern: "baz", replacement: "qux", global: true}, // native (batched)
 	}
-	err := cmd.runBatch(context.Background(), u, "", "test-doc", exprs)
+	err := cmd.runBatch(ctx, u, "", "test-doc", exprs)
 	assert.NoError(t, err)
 }
 
@@ -293,7 +290,7 @@ func TestRunBatch_WithDelete(t *testing.T) {
 	}
 	svc, cleanup := newSedTestServer(t, doc)
 	defer cleanup()
-	mockDocsService(t, svc)
+	ctx := mockDocsContext(t, svc)
 
 	cmd := &DocsSedCmd{}
 	u := sedTestUI()
@@ -302,6 +299,6 @@ func TestRunBatch_WithDelete(t *testing.T) {
 		{command: 'd', pattern: "target"},
 		{pattern: "foo", replacement: "bar", global: true},
 	}
-	err := cmd.runBatch(context.Background(), u, "", "test-doc", exprs)
+	err := cmd.runBatch(ctx, u, "", "test-doc", exprs)
 	assert.NoError(t, err)
 }

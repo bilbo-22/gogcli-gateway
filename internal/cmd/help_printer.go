@@ -10,19 +10,35 @@ import (
 
 	"github.com/alecthomas/kong"
 	"github.com/muesli/termenv"
-	"golang.org/x/term"
+
+	"github.com/steipete/gogcli/internal/termutil"
 )
+
+const helpModeFull = "full"
 
 func helpOptions() kong.HelpOptions {
 	mode := strings.ToLower(strings.TrimSpace(os.Getenv("GOG_HELP")))
 	return kong.HelpOptions{
-		NoExpandSubcommands: mode != "full",
+		NoExpandSubcommands: mode != helpModeFull,
 	}
 }
 
 func helpPrinter(options kong.HelpOptions, ctx *kong.Context) error {
 	origStdout := ctx.Stdout
 	origStderr := ctx.Stderr
+	profile, err := loadBakedSafetyProfile()
+	if err != nil {
+		return usagef("invalid baked safety profile: %v", err)
+	}
+	if profile.commandNodeBlockedForHelp(ctx.Selected()) {
+		path := commandNodePath(ctx.Selected())
+		if blockErr := profile.commandPathError(path); blockErr != nil {
+			_, _ = fmt.Fprintln(origStdout, blockErr)
+		}
+		return nil
+	}
+	restoreVisibility := applySafetyProfileVisibility(ctx.Model.Node, profile)
+	defer restoreVisibility()
 
 	width := guessColumns(origStdout)
 
@@ -41,22 +57,21 @@ func helpPrinter(options kong.HelpOptions, ctx *kong.Context) error {
 	ctx.Stderr = origStderr
 	defer func() { ctx.Stdout = origStdout }()
 
-	if err := kong.DefaultHelpPrinter(options, ctx); err != nil {
-		return err
+	if helpErr := kong.DefaultHelpPrinter(options, ctx); helpErr != nil {
+		return helpErr
 	}
 
 	out := rewriteCommandSummaries(buf.String(), ctx.Selected())
+	out = removeEmptyCommandGroups(out)
 	out = injectBuildLine(out)
+	out = injectAutomationHelp(out, ctx.Selected())
 	out = colorizeHelp(out, helpProfile(origStdout, helpColorMode(ctx.Args)))
-	_, err := io.WriteString(origStdout, out)
+	_, err = io.WriteString(origStdout, out)
 	return err
 }
 
 func injectBuildLine(out string) string {
-	v := strings.TrimSpace(version)
-	if v == "" {
-		v = "dev"
-	}
+	v := resolvedVersion()
 	c := strings.TrimSpace(commit)
 	line := fmt.Sprintf("Build: %s", v)
 	if c != "" {
@@ -77,6 +92,38 @@ func injectBuildLine(out string) string {
 		}
 	}
 	return out
+}
+
+func injectAutomationHelp(out string, selected *kong.Node) string {
+	owner := helpOwnerNode(selected)
+	if selected != nil && (owner == nil || owner.Type != kong.ApplicationNode) {
+		return out
+	}
+	if strings.Contains(out, "\nAutomation:\n") {
+		return out
+	}
+
+	const section = `Automation:
+  Use --json or --plain for stable output; --no-input disables prompts.
+  Use "gog help <command>" or "gog <command> --help" for command help.
+  Exit codes: 0 success, 1 error, 2 usage, 3 empty, 4 auth, 5 not found,
+    6 denied, 7 rate limited, 8 retryable, 10 config, 11 orphaned,
+    130 interrupted.
+  Run "gog schema --json" for the complete machine-readable contract.
+`
+	if marker := "\nCommands:\n"; strings.Contains(out, marker) {
+		return strings.Replace(out, marker, "\n"+section+marker, 1)
+	}
+	return out + "\n" + section
+}
+
+func helpOwnerNode(selected *kong.Node) *kong.Node {
+	for node := selected; node != nil; node = node.Parent {
+		if node.Type == kong.CommandNode || node.Type == kong.ApplicationNode {
+			return node
+		}
+	}
+	return nil
 }
 
 func helpColorMode(args []string) string {
@@ -152,6 +199,8 @@ func colorizeHelp(out string, profile termenv.Profile) string {
 			lines[i] = section(line)
 		case line == "Arguments:":
 			lines[i] = section(line)
+		case line == "Automation:":
+			lines[i] = section(line)
 		case strings.HasPrefix(line, "Build:") || line == "Config:":
 			lines[i] = section(line)
 		case line == "Read" || line == "Write" || line == "Organize" || line == "Admin":
@@ -163,6 +212,60 @@ func colorizeHelp(out string, profile termenv.Profile) string {
 		}
 	}
 	return strings.Join(lines, "\n")
+}
+
+func removeEmptyCommandGroups(out string) string {
+	lines := strings.Split(out, "\n")
+	skip := map[int]bool{}
+	for i, line := range lines {
+		if !isHelpCommandGroup(line) {
+			continue
+		}
+		if !helpGroupHasCommand(lines, i+1) {
+			skip[i] = true
+		}
+	}
+	if len(skip) == 0 {
+		return out
+	}
+	kept := make([]string, 0, len(lines)-len(skip))
+	for i, line := range lines {
+		if skip[i] {
+			continue
+		}
+		kept = append(kept, line)
+	}
+	return strings.Join(kept, "\n")
+}
+
+func helpGroupHasCommand(lines []string, start int) bool {
+	for i := start; i < len(lines); i++ {
+		line := lines[i]
+		if isHelpCommandGroup(line) || isHelpSection(line) {
+			return false
+		}
+		if isHelpCommandSummaryLine(line) {
+			return true
+		}
+	}
+	return false
+}
+
+func isHelpCommandGroup(line string) bool {
+	switch line {
+	case "Read", "Write", "Organize", "Admin":
+		return true
+	default:
+		return false
+	}
+}
+
+func isHelpSection(line string) bool {
+	return line == "Usage:" || strings.HasPrefix(line, "Usage:") || line == "Flags:" || line == "Commands:" || line == "Arguments:" || line == "Automation:" || strings.HasPrefix(line, "Build:") || line == "Config:"
+}
+
+func isHelpCommandSummaryLine(line string) bool {
+	return strings.HasPrefix(line, "  ") && (len(line) < 3 || line[2] != ' ') && strings.TrimSpace(line) != ""
 }
 
 func colorizeCommandSummaryLine(line string, cmdName func(string) string, dim func(string) string) string {
@@ -217,7 +320,7 @@ func guessColumns(w io.Writer) int {
 		return 80
 	}
 
-	width, _, err := term.GetSize(int(f.Fd()))
+	width, _, err := termutil.GetSize(f)
 	if err == nil && width > 0 {
 		return width
 	}

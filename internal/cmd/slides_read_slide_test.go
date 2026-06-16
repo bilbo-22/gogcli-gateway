@@ -1,20 +1,14 @@
 package cmd
 
 import (
-	"context"
+	"bytes"
 	"encoding/json"
 	"io"
 	"net/http"
-	"net/http/httptest"
-	"os"
 	"strings"
 	"testing"
 
-	"google.golang.org/api/option"
 	"google.golang.org/api/slides/v1"
-
-	"github.com/steipete/gogcli/internal/outfmt"
-	"github.com/steipete/gogcli/internal/ui"
 )
 
 func readSlidePresResponse() map[string]any {
@@ -74,108 +68,66 @@ func readSlidePresResponse() map[string]any {
 	}
 }
 
-func TestSlidesReadSlide(t *testing.T) {
-	origSlides := newSlidesService
-	t.Cleanup(func() { newSlidesService = origSlides })
+func newSlidesReadTestService(t *testing.T, response map[string]any) *slides.Service {
+	t.Helper()
 
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	svc, closeServer := newGoogleTestService(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		if strings.Contains(r.URL.Path, "/presentations/pres1") && r.Method == http.MethodGet {
-			_ = json.NewEncoder(w).Encode(readSlidePresResponse())
+			_ = json.NewEncoder(w).Encode(response)
 			return
 		}
 		http.NotFound(w, r)
-	}))
-	defer srv.Close()
+	}), slides.NewService)
+	t.Cleanup(closeServer)
+	return svc
+}
 
-	svc, err := slides.NewService(context.Background(),
-		option.WithoutAuthentication(),
-		option.WithHTTPClient(srv.Client()),
-		option.WithEndpoint(srv.URL+"/"),
-	)
-	if err != nil {
-		t.Fatalf("slides.NewService: %v", err)
-	}
-	newSlidesService = func(context.Context, string) (*slides.Service, error) { return svc, nil }
-
+func TestSlidesReadSlide(t *testing.T) {
+	svc := newSlidesReadTestService(t, readSlidePresResponse())
 	flags := &RootFlags{Account: "a@b.com"}
+	var out bytes.Buffer
+	ctx := withSlidesTestService(newCmdRuntimeOutputContext(t, &out, io.Discard), svc)
 
-	out := captureStdout(t, func() {
-		u, uiErr := ui.New(ui.Options{Stdout: os.Stdout, Stderr: io.Discard, Color: "never"})
-		if uiErr != nil {
-			t.Fatalf("ui.New: %v", uiErr)
-		}
-		ctx := ui.WithUI(context.Background(), u)
+	cmd := &SlidesReadSlideCmd{
+		PresentationID: "pres1",
+		SlideID:        "slide_1",
+	}
+	if err := cmd.Run(ctx, flags); err != nil {
+		t.Fatalf("Run: %v", err)
+	}
 
-		cmd := &SlidesReadSlideCmd{
-			PresentationID: "pres1",
-			SlideID:        "slide_1",
-		}
-		if err := cmd.Run(ctx, flags); err != nil {
-			t.Fatalf("Run: %v", err)
-		}
-	})
-
-	if !strings.Contains(out, "Slide 1") {
-		t.Errorf("expected slide number, got: %q", out)
+	if !strings.Contains(out.String(), "Slide 1") {
+		t.Errorf("expected slide number, got: %q", out.String())
 	}
-	if !strings.Contains(out, "These are speaker notes") {
-		t.Errorf("expected speaker notes, got: %q", out)
+	if !strings.Contains(out.String(), "These are speaker notes") {
+		t.Errorf("expected speaker notes, got: %q", out.String())
 	}
-	if !strings.Contains(out, "Slide Title") {
-		t.Errorf("expected text element, got: %q", out)
+	if !strings.Contains(out.String(), "Slide Title") {
+		t.Errorf("expected text element, got: %q", out.String())
 	}
-	if !strings.Contains(out, "img_el_1") {
-		t.Errorf("expected image element, got: %q", out)
+	if !strings.Contains(out.String(), "img_el_1") {
+		t.Errorf("expected image element, got: %q", out.String())
 	}
 }
 
 func TestSlidesReadSlide_JSON(t *testing.T) {
-	origSlides := newSlidesService
-	t.Cleanup(func() { newSlidesService = origSlides })
-
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Content-Type", "application/json")
-		if strings.Contains(r.URL.Path, "/presentations/pres1") && r.Method == http.MethodGet {
-			_ = json.NewEncoder(w).Encode(readSlidePresResponse())
-			return
-		}
-		http.NotFound(w, r)
-	}))
-	defer srv.Close()
-
-	svc, err := slides.NewService(context.Background(),
-		option.WithoutAuthentication(),
-		option.WithHTTPClient(srv.Client()),
-		option.WithEndpoint(srv.URL+"/"),
-	)
-	if err != nil {
-		t.Fatalf("slides.NewService: %v", err)
-	}
-	newSlidesService = func(context.Context, string) (*slides.Service, error) { return svc, nil }
-
+	svc := newSlidesReadTestService(t, readSlidePresResponse())
 	flags := &RootFlags{Account: "a@b.com"}
+	var out bytes.Buffer
+	ctx := withSlidesTestService(newCmdRuntimeJSONOutputContext(t, &out, io.Discard), svc)
 
-	out := captureStdout(t, func() {
-		u, uiErr := ui.New(ui.Options{Stdout: io.Discard, Stderr: io.Discard, Color: "never"})
-		if uiErr != nil {
-			t.Fatalf("ui.New: %v", uiErr)
-		}
-		ctx := ui.WithUI(context.Background(), u)
-		ctx = outfmt.WithMode(ctx, outfmt.Mode{JSON: true})
-
-		cmd := &SlidesReadSlideCmd{
-			PresentationID: "pres1",
-			SlideID:        "slide_1",
-		}
-		if err := cmd.Run(ctx, flags); err != nil {
-			t.Fatalf("Run: %v", err)
-		}
-	})
+	cmd := &SlidesReadSlideCmd{
+		PresentationID: "pres1",
+		SlideID:        "slide_1",
+	}
+	if err := cmd.Run(ctx, flags); err != nil {
+		t.Fatalf("Run: %v", err)
+	}
 
 	var result map[string]any
-	if err := json.Unmarshal([]byte(out), &result); err != nil {
-		t.Fatalf("JSON parse: %v\noutput: %q", err, out)
+	if err := json.Unmarshal(out.Bytes(), &result); err != nil {
+		t.Fatalf("JSON parse: %v\noutput: %q", err, out.String())
 	}
 	if result["slideNumber"] != float64(1) {
 		t.Errorf("expected slideNumber=1, got %v", result["slideNumber"])
@@ -198,51 +150,66 @@ func TestSlidesReadSlide_JSON(t *testing.T) {
 	}
 }
 
-func TestSlidesReadSlide_NotFound(t *testing.T) {
-	origSlides := newSlidesService
-	t.Cleanup(func() { newSlidesService = origSlides })
-
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Content-Type", "application/json")
-		if strings.Contains(r.URL.Path, "/presentations/pres1") && r.Method == http.MethodGet {
-			_ = json.NewEncoder(w).Encode(readSlidePresResponse())
-			return
-		}
-		http.NotFound(w, r)
-	}))
-	defer srv.Close()
-
-	svc, err := slides.NewService(context.Background(),
-		option.WithoutAuthentication(),
-		option.WithHTTPClient(srv.Client()),
-		option.WithEndpoint(srv.URL+"/"),
-	)
-	if err != nil {
-		t.Fatalf("slides.NewService: %v", err)
+func TestSlidesReadSlide_JSONEmptyArrays(t *testing.T) {
+	presResp := map[string]any{
+		"presentationId": "pres1",
+		"slides": []any{
+			map[string]any{
+				"objectId":     "slide_1",
+				"pageElements": []any{},
+			},
+		},
 	}
-	newSlidesService = func(context.Context, string) (*slides.Service, error) { return svc, nil }
 
+	svc := newSlidesReadTestService(t, presResp)
 	flags := &RootFlags{Account: "a@b.com"}
-	u, uiErr := ui.New(ui.Options{Stdout: io.Discard, Stderr: io.Discard, Color: "never"})
-	if uiErr != nil {
-		t.Fatalf("ui.New: %v", uiErr)
+	var out bytes.Buffer
+	ctx := withSlidesTestService(newCmdRuntimeJSONOutputContext(t, &out, io.Discard), svc)
+	cmd := &SlidesReadSlideCmd{
+		PresentationID: "pres1",
+		SlideID:        "slide_1",
 	}
-	ctx := ui.WithUI(context.Background(), u)
+	if err := cmd.Run(ctx, flags); err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+
+	var result struct {
+		TextElements []json.RawMessage `json:"textElements"`
+		Images       []json.RawMessage `json:"images"`
+	}
+	if err := json.Unmarshal(out.Bytes(), &result); err != nil {
+		t.Fatalf("JSON parse: %v\noutput: %q", err, out.String())
+	}
+	if result.TextElements == nil {
+		t.Fatalf("textElements must be an empty array, got nil: %s", out.String())
+	}
+	if len(result.TextElements) != 0 {
+		t.Fatalf("textElements len = %d, want 0", len(result.TextElements))
+	}
+	if result.Images == nil {
+		t.Fatalf("images must be an empty array, got nil: %s", out.String())
+	}
+	if len(result.Images) != 0 {
+		t.Fatalf("images len = %d, want 0", len(result.Images))
+	}
+}
+
+func TestSlidesReadSlide_NotFound(t *testing.T) {
+	svc := newSlidesReadTestService(t, readSlidePresResponse())
+	flags := &RootFlags{Account: "a@b.com"}
+	ctx := withSlidesTestService(newCmdRuntimeOutputContext(t, io.Discard, io.Discard), svc)
 
 	cmd := &SlidesReadSlideCmd{
 		PresentationID: "pres1",
 		SlideID:        "nonexistent",
 	}
-	err = cmd.Run(ctx, flags)
+	err := cmd.Run(ctx, flags)
 	if err == nil || !strings.Contains(err.Error(), `slide "nonexistent" not found`) {
 		t.Fatalf("expected slide-not-found error, got: %v", err)
 	}
 }
 
 func TestSlidesReadSlide_NoNotes(t *testing.T) {
-	origSlides := newSlidesService
-	t.Cleanup(func() { newSlidesService = origSlides })
-
 	presResp := map[string]any{
 		"presentationId": "pres1",
 		"slides": []any{
@@ -256,45 +223,20 @@ func TestSlidesReadSlide_NoNotes(t *testing.T) {
 		},
 	}
 
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Content-Type", "application/json")
-		if strings.Contains(r.URL.Path, "/presentations/pres1") && r.Method == http.MethodGet {
-			_ = json.NewEncoder(w).Encode(presResp)
-			return
-		}
-		http.NotFound(w, r)
-	}))
-	defer srv.Close()
-
-	svc, err := slides.NewService(context.Background(),
-		option.WithoutAuthentication(),
-		option.WithHTTPClient(srv.Client()),
-		option.WithEndpoint(srv.URL+"/"),
-	)
-	if err != nil {
-		t.Fatalf("slides.NewService: %v", err)
-	}
-	newSlidesService = func(context.Context, string) (*slides.Service, error) { return svc, nil }
-
+	svc := newSlidesReadTestService(t, presResp)
 	flags := &RootFlags{Account: "a@b.com"}
+	var out bytes.Buffer
+	ctx := withSlidesTestService(newCmdRuntimeOutputContext(t, &out, io.Discard), svc)
 
-	out := captureStdout(t, func() {
-		u, uiErr := ui.New(ui.Options{Stdout: os.Stdout, Stderr: io.Discard, Color: "never"})
-		if uiErr != nil {
-			t.Fatalf("ui.New: %v", uiErr)
-		}
-		ctx := ui.WithUI(context.Background(), u)
+	cmd := &SlidesReadSlideCmd{
+		PresentationID: "pres1",
+		SlideID:        "slide_1",
+	}
+	if err := cmd.Run(ctx, flags); err != nil {
+		t.Fatalf("Run: %v", err)
+	}
 
-		cmd := &SlidesReadSlideCmd{
-			PresentationID: "pres1",
-			SlideID:        "slide_1",
-		}
-		if err := cmd.Run(ctx, flags); err != nil {
-			t.Fatalf("Run: %v", err)
-		}
-	})
-
-	if !strings.Contains(out, "Speaker Notes: (none)") {
-		t.Errorf("expected '(none)' for empty notes, got: %q", out)
+	if !strings.Contains(out.String(), "Speaker Notes: (none)") {
+		t.Errorf("expected '(none)' for empty notes, got: %q", out.String())
 	}
 }

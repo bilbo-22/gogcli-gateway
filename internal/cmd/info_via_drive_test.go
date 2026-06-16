@@ -12,15 +12,9 @@ import (
 
 	"google.golang.org/api/drive/v3"
 	"google.golang.org/api/option"
-
-	"github.com/steipete/gogcli/internal/outfmt"
-	"github.com/steipete/gogcli/internal/ui"
 )
 
 func TestInfoViaDriveCmd_TextAndJSON(t *testing.T) {
-	origNew := newDriveService
-	t.Cleanup(func() { newDriveService = origNew })
-
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if strings.Contains(r.URL.Path, "/files/") {
 			w.Header().Set("Content-Type", "application/json")
@@ -48,17 +42,11 @@ func TestInfoViaDriveCmd_TextAndJSON(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewService: %v", err)
 	}
-	newDriveService = func(context.Context, string) (*drive.Service, error) { return svc, nil }
 
 	flags := &RootFlags{Account: "a@b.com"}
 
 	var outBuf bytes.Buffer
-	u, err := ui.New(ui.Options{Stdout: &outBuf, Stderr: io.Discard, Color: "never"})
-	if err != nil {
-		t.Fatalf("ui.New: %v", err)
-	}
-	ctx := ui.WithUI(context.Background(), u)
-	ctx = outfmt.WithMode(ctx, outfmt.Mode{})
+	ctx := withDriveTestService(newCmdRuntimeOutputContext(t, &outBuf, io.Discard), svc)
 
 	if err := infoViaDrive(ctx, flags, infoViaDriveOptions{ArgName: "id"}, "id1"); err != nil {
 		t.Fatalf("execute: %v", err)
@@ -68,18 +56,11 @@ func TestInfoViaDriveCmd_TextAndJSON(t *testing.T) {
 		t.Fatalf("unexpected text: %q", text)
 	}
 
-	jsonOut := captureStdout(t, func() {
-		u2, uiErr := ui.New(ui.Options{Stdout: io.Discard, Stderr: io.Discard, Color: "never"})
-		if uiErr != nil {
-			t.Fatalf("ui.New: %v", uiErr)
-		}
-		ctx2 := ui.WithUI(context.Background(), u2)
-		ctx2 = outfmt.WithMode(ctx2, outfmt.Mode{JSON: true})
-
-		if err := infoViaDrive(ctx2, flags, infoViaDriveOptions{ArgName: "id"}, "id1"); err != nil {
-			t.Fatalf("execute: %v", err)
-		}
-	})
+	var jsonOut bytes.Buffer
+	ctx2 := withDriveTestService(newCmdRuntimeJSONOutputContext(t, &jsonOut, io.Discard), svc)
+	if err := infoViaDrive(ctx2, flags, infoViaDriveOptions{ArgName: "id"}, "id1"); err != nil {
+		t.Fatalf("execute: %v", err)
+	}
 
 	var parsed struct {
 		File struct {
@@ -89,7 +70,7 @@ func TestInfoViaDriveCmd_TextAndJSON(t *testing.T) {
 			Parents  []string `json:"parents"`
 		} `json:"file"`
 	}
-	if err := json.Unmarshal([]byte(jsonOut), &parsed); err != nil {
+	if err := json.Unmarshal(jsonOut.Bytes(), &parsed); err != nil {
 		t.Fatalf("json parse: %v", err)
 	}
 	if parsed.File.ID != "id1" || parsed.File.MimeType != "application/pdf" || len(parsed.File.Parents) != 2 {
@@ -98,9 +79,6 @@ func TestInfoViaDriveCmd_TextAndJSON(t *testing.T) {
 }
 
 func TestInfoViaDriveCmd_ExpectedMimeError(t *testing.T) {
-	origNew := newDriveService
-	t.Cleanup(func() { newDriveService = origNew })
-
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if strings.Contains(r.URL.Path, "/files/") {
 			w.Header().Set("Content-Type", "application/json")
@@ -123,14 +101,9 @@ func TestInfoViaDriveCmd_ExpectedMimeError(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewService: %v", err)
 	}
-	newDriveService = func(context.Context, string) (*drive.Service, error) { return svc, nil }
 
 	flags := &RootFlags{Account: "a@b.com"}
-	u, err := ui.New(ui.Options{Stdout: io.Discard, Stderr: io.Discard, Color: "never"})
-	if err != nil {
-		t.Fatalf("ui.New: %v", err)
-	}
-	ctx := ui.WithUI(context.Background(), u)
+	ctx := withDriveTestService(newCmdRuntimeOutputContext(t, io.Discard, io.Discard), svc)
 
 	if err := infoViaDrive(ctx, flags, infoViaDriveOptions{ArgName: "id", ExpectedMime: "application/vnd.google-apps.spreadsheet", KindLabel: "sheet"}, "id1"); err == nil || !strings.Contains(err.Error(), "not a sheet") {
 		t.Fatalf("expected mime error, got: %v", err)

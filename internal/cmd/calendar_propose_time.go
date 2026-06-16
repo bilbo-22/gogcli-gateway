@@ -4,7 +4,6 @@ import (
 	"context"
 	"encoding/base64"
 	"fmt"
-	"os"
 	"os/exec"
 	"runtime"
 	"strings"
@@ -24,21 +23,26 @@ const (
 // CalendarProposeTimeCmd generates a browser URL for proposing a new meeting time.
 // This is a workaround for a Google Calendar API limitation (since 2018).
 type CalendarProposeTimeCmd struct {
-	CalendarID string `arg:"" name:"calendarId" help:"Calendar ID"`
-	EventID    string `arg:"" name:"eventId" help:"Event ID"`
-	Open       bool   `name:"open" help:"Open the URL in browser automatically"`
-	Decline    bool   `name:"decline" help:"Also decline the event (notifies organizer)"`
-	Comment    string `name:"comment" help:"Comment to include with decline (implies --decline)"`
+	CalendarID  string `arg:"" name:"calendarId" help:"Calendar ID"`
+	EventID     string `arg:"" name:"eventId" help:"Event ID"`
+	Open        bool   `name:"open" help:"Open the URL in browser automatically"`
+	Decline     bool   `name:"decline" help:"Also decline the event (notifies organizer)"`
+	Comment     string `name:"comment" help:"Comment to include with decline (implies --decline)"`
+	openBrowser func(context.Context, string) error
 }
 
 func (c *CalendarProposeTimeCmd) Run(ctx context.Context, flags *RootFlags) error {
 	u := ui.FromContext(ctx)
 
-	calendarID := strings.TrimSpace(c.CalendarID)
-	eventID := normalizeCalendarEventID(c.EventID)
-	if calendarID == "" {
-		return usage("empty calendarId")
+	store, err := commandConfigStore(ctx)
+	if err != nil {
+		return err
 	}
+	calendarID, err := prepareCalendarID(store, c.CalendarID, false)
+	if err != nil {
+		return err
+	}
+	eventID := normalizeCalendarEventID(c.EventID)
 	if eventID == "" {
 		return usage("empty eventId")
 	}
@@ -53,15 +57,15 @@ func (c *CalendarProposeTimeCmd) Run(ctx context.Context, flags *RootFlags) erro
 	proposeURL := "https://calendar.google.com/calendar/u/0/r/proposetime/" + encoded
 
 	// Avoid touching auth/keyring and avoid mutating the event in dry-run mode.
-	if err := dryRunExit(ctx, flags, "calendar.propose_time", map[string]any{
+	if dryRunErr := dryRunExit(ctx, flags, "calendar.propose-time", map[string]any{
 		"calendar_id": calendarID,
 		"event_id":    eventID,
 		"propose_url": proposeURL,
 		"open":        c.Open,
 		"decline":     decline,
 		"comment":     strings.TrimSpace(c.Comment),
-	}); err != nil {
-		return err
+	}); dryRunErr != nil {
+		return dryRunErr
 	}
 
 	account, err := requireAccount(flags)
@@ -69,7 +73,7 @@ func (c *CalendarProposeTimeCmd) Run(ctx context.Context, flags *RootFlags) erro
 		return err
 	}
 
-	svc, err := newCalendarService(ctx, account)
+	svc, err := calendarService(ctx, account)
 	if err != nil {
 		return err
 	}
@@ -93,7 +97,7 @@ func (c *CalendarProposeTimeCmd) Run(ctx context.Context, flags *RootFlags) erro
 	// If declining, update the event response
 	if decline {
 		if len(event.Attendees) == 0 {
-			return fmt.Errorf("event has no attendees, cannot decline")
+			return usage("event has no attendees, cannot decline")
 		}
 
 		var selfIdx *int
@@ -104,10 +108,10 @@ func (c *CalendarProposeTimeCmd) Run(ctx context.Context, flags *RootFlags) erro
 			}
 		}
 		if selfIdx == nil {
-			return fmt.Errorf("you are not an attendee of this event")
+			return usage("you are not an attendee of this event")
 		}
 		if event.Attendees[*selfIdx].Organizer {
-			return fmt.Errorf("cannot decline your own event (you are the organizer)")
+			return usage("cannot decline your own event (you are the organizer)")
 		}
 
 		event.Attendees[*selfIdx].ResponseStatus = "declined"
@@ -156,15 +160,15 @@ func (c *CalendarProposeTimeCmd) Run(ctx context.Context, flags *RootFlags) erro
 				result["comment"] = strings.TrimSpace(c.Comment)
 			}
 		}
-		return outfmt.WriteJSON(ctx, os.Stdout, result)
+		return outfmt.WriteJSON(ctx, stdoutWriter(ctx), result)
 	}
 
 	// Text output
-	u.Out().Printf("# API Limitation: %s", proposeTimeAPILimitation)
-	u.Out().Printf("# Issue tracker: %s", proposeTimeIssueTrackerURL)
-	u.Out().Printf("# Action: %s", proposeTimeUpvoteAction)
-	u.Out().Printf("")
-	u.Out().Printf("event\t%s", orEmpty(event.Summary, "(no title)"))
+	u.Out().Linef("# API Limitation: %s", proposeTimeAPILimitation)
+	u.Out().Linef("# Issue tracker: %s", proposeTimeIssueTrackerURL)
+	u.Out().Linef("# Action: %s", proposeTimeUpvoteAction)
+	u.Out().Linef("")
+	u.Out().Linef("event\t%s", orEmpty(event.Summary, "(no title)"))
 	if event.Start != nil {
 		start := event.Start.DateTime
 		if start == "" {
@@ -177,29 +181,33 @@ func (c *CalendarProposeTimeCmd) Run(ctx context.Context, flags *RootFlags) erro
 				end = event.End.Date
 			}
 		}
-		u.Out().Printf("current\t%s - %s", start, end)
+		u.Out().Linef("current\t%s - %s", start, end)
 	}
-	u.Out().Printf("propose_url\t%s", proposeURL)
+	u.Out().Linef("propose_url\t%s", proposeURL)
 
 	if decline {
-		u.Out().Printf("")
-		u.Out().Printf("declined\tyes")
+		u.Out().Linef("")
+		u.Out().Linef("declined\tyes")
 		if strings.TrimSpace(c.Comment) != "" {
-			u.Out().Printf("comment\t%s", strings.TrimSpace(c.Comment))
+			u.Out().Linef("comment\t%s", strings.TrimSpace(c.Comment))
 		}
 	} else {
-		u.Out().Printf("")
-		u.Out().Printf("Tip: To notify the organizer, decline with a comment:")
-		u.Out().Printf("  gog calendar propose-time %s %s --decline --comment \"Can we do 5pm instead?\"", calendarID, eventID)
+		u.Out().Linef("")
+		u.Out().Linef("Tip: To notify the organizer, decline with a comment:")
+		u.Out().Linef("  gog calendar propose-time %s %s --decline --comment \"Can we do 5pm instead?\"", calendarID, eventID)
 	}
 
 	// Open browser if requested
 	if c.Open {
-		u.Out().Printf("")
-		u.Out().Printf("Opening browser...")
-		if err := openProposeTimeBrowser(proposeURL); err != nil {
-			u.Err().Printf("Failed to open browser: %v", err)
-			u.Err().Printf("Please open the propose_url manually.")
+		u.Out().Linef("")
+		u.Out().Linef("Opening browser...")
+		openBrowser := c.openBrowser
+		if openBrowser == nil {
+			openBrowser = openProposeTimeBrowser
+		}
+		if err := openBrowser(ctx, proposeURL); err != nil {
+			u.Err().Linef("Failed to open browser: %v", err)
+			u.Err().Linef("Please open the propose_url manually.")
 		}
 	}
 
@@ -207,15 +215,15 @@ func (c *CalendarProposeTimeCmd) Run(ctx context.Context, flags *RootFlags) erro
 }
 
 // openProposeTimeBrowser opens the URL in the default browser.
-var openProposeTimeBrowser = func(url string) error {
+func openProposeTimeBrowser(ctx context.Context, url string) error {
 	var cmd *exec.Cmd
 	switch runtime.GOOS {
 	case "darwin":
-		cmd = exec.Command("open", url)
-	case "windows":
-		cmd = exec.Command("rundll32", "url.dll,FileProtocolHandler", url)
+		cmd = exec.CommandContext(ctx, "open", url) //nolint:gosec // executable is fixed; arg is generated propose URL
+	case literalWindows:
+		cmd = exec.CommandContext(ctx, "rundll32", "url.dll,FileProtocolHandler", url) //nolint:gosec // executable is fixed; arg is generated propose URL
 	default:
-		cmd = exec.Command("xdg-open", url)
+		cmd = exec.CommandContext(ctx, "xdg-open", url) //nolint:gosec // executable is fixed; arg is generated propose URL
 	}
 	return cmd.Start()
 }

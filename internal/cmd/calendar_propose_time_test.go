@@ -1,21 +1,18 @@
 package cmd
 
 import (
+	"bytes"
 	"context"
 	"encoding/base64"
 	"encoding/json"
 	"io"
 	"net/http"
 	"net/http/httptest"
-	"os"
 	"strings"
 	"testing"
 
 	"google.golang.org/api/calendar/v3"
 	"google.golang.org/api/option"
-
-	"github.com/steipete/gogcli/internal/outfmt"
-	"github.com/steipete/gogcli/internal/ui"
 )
 
 func TestProposeTimeURLGeneration(t *testing.T) {
@@ -53,19 +50,7 @@ func TestProposeTimeURLGeneration(t *testing.T) {
 }
 
 func TestCalendarProposeTimeCmd_Text(t *testing.T) {
-	origNew := newCalendarService
-	origOpen := openProposeTimeBrowser
-	t.Cleanup(func() {
-		newCalendarService = origNew
-		openProposeTimeBrowser = origOpen
-	})
-
-	// Mock browser open to track if called
 	var browserOpened string
-	openProposeTimeBrowser = func(url string) error {
-		browserOpened = url
-		return nil
-	}
 
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		path := strings.TrimPrefix(r.URL.Path, "/calendar/v3")
@@ -95,21 +80,18 @@ func TestCalendarProposeTimeCmd_Text(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewService: %v", err)
 	}
-	newCalendarService = func(context.Context, string) (*calendar.Service, error) { return svc, nil }
 
 	flags := &RootFlags{Account: "a@b.com"}
-	out := captureStdout(t, func() {
-		u, uiErr := ui.New(ui.Options{Stdout: os.Stdout, Stderr: io.Discard, Color: "never"})
-		if uiErr != nil {
-			t.Fatalf("ui.New: %v", uiErr)
-		}
-		ctx := ui.WithUI(context.Background(), u)
-
-		cmd := &CalendarProposeTimeCmd{}
-		if err := runKong(t, cmd, []string{"cal1@example.com", "evt1", "--open"}, ctx, flags); err != nil {
-			t.Fatalf("propose-time: %v", err)
-		}
-	})
+	var output bytes.Buffer
+	ctx := withCalendarTestService(newCmdRuntimeOutputContext(t, &output, io.Discard), svc)
+	cmd := &CalendarProposeTimeCmd{openBrowser: func(_ context.Context, url string) error {
+		browserOpened = url
+		return nil
+	}}
+	if err := runKong(t, cmd, []string{"cal1@example.com", "evt1", "--open"}, ctx, flags); err != nil {
+		t.Fatalf("propose-time: %v", err)
+	}
+	out := output.String()
 
 	// Verify output contains expected fields
 	if !strings.Contains(out, "propose_url") {
@@ -141,14 +123,6 @@ func TestCalendarProposeTimeCmd_Text(t *testing.T) {
 }
 
 func TestCalendarProposeTimeCmd_JSON(t *testing.T) {
-	origNew := newCalendarService
-	origOpen := openProposeTimeBrowser
-	t.Cleanup(func() {
-		newCalendarService = origNew
-		openProposeTimeBrowser = origOpen
-	})
-	openProposeTimeBrowser = func(url string) error { return nil }
-
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		path := strings.TrimPrefix(r.URL.Path, "/calendar/v3")
 		if strings.Contains(path, "/calendars/cal1@example.com/events/evt1") && r.Method == http.MethodGet {
@@ -177,22 +151,15 @@ func TestCalendarProposeTimeCmd_JSON(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewService: %v", err)
 	}
-	newCalendarService = func(context.Context, string) (*calendar.Service, error) { return svc, nil }
 
 	flags := &RootFlags{Account: "a@b.com", JSON: true}
-	out := captureStdout(t, func() {
-		u, uiErr := ui.New(ui.Options{Stdout: os.Stdout, Stderr: io.Discard, Color: "never"})
-		if uiErr != nil {
-			t.Fatalf("ui.New: %v", uiErr)
-		}
-		ctx := ui.WithUI(context.Background(), u)
-		ctx = outfmt.WithMode(ctx, outfmt.Mode{JSON: true})
-
-		cmd := &CalendarProposeTimeCmd{}
-		if err := runKong(t, cmd, []string{"cal1@example.com", "evt1"}, ctx, flags); err != nil {
-			t.Fatalf("propose-time JSON: %v", err)
-		}
-	})
+	var output bytes.Buffer
+	ctx := withCalendarTestService(newCmdRuntimeJSONOutputContext(t, &output, io.Discard), svc)
+	cmd := &CalendarProposeTimeCmd{}
+	if err := runKong(t, cmd, []string{"cal1@example.com", "evt1"}, ctx, flags); err != nil {
+		t.Fatalf("propose-time JSON: %v", err)
+	}
+	out := output.String()
 
 	// Parse and verify JSON structure
 	var result map[string]any
@@ -223,15 +190,82 @@ func TestCalendarProposeTimeCmd_JSON(t *testing.T) {
 	}
 }
 
-func TestCalendarProposeTimeCmd_WithDecline(t *testing.T) {
-	origNew := newCalendarService
-	origOpen := openProposeTimeBrowser
-	t.Cleanup(func() {
-		newCalendarService = origNew
-		openProposeTimeBrowser = origOpen
-	})
-	openProposeTimeBrowser = func(url string) error { return nil }
+func TestCalendarProposeTimeCmd_DeclineValidationIsUsage(t *testing.T) {
+	tests := []struct {
+		name      string
+		attendees []map[string]any
+		wantErr   string
+	}{
+		{
+			name:      "no attendees",
+			attendees: nil,
+			wantErr:   "event has no attendees, cannot decline",
+		},
+		{
+			name: "self missing",
+			attendees: []map[string]any{
+				{"email": "organizer@b.com", "organizer": true},
+				{"email": "guest@b.com"},
+			},
+			wantErr: "you are not an attendee of this event",
+		},
+		{
+			name: "self organizer",
+			attendees: []map[string]any{
+				{"email": "a@b.com", "self": true, "organizer": true},
+			},
+			wantErr: "cannot decline your own event (you are the organizer)",
+		},
+	}
 
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				path := strings.TrimPrefix(r.URL.Path, "/calendar/v3")
+				if strings.Contains(path, "/calendars/cal1@example.com/events/evt1") && r.Method == http.MethodGet {
+					w.Header().Set("Content-Type", "application/json")
+					body := map[string]any{
+						"id":      "evt1",
+						"summary": "Team Meeting",
+					}
+					if tt.attendees != nil {
+						body["attendees"] = tt.attendees
+					}
+					_ = json.NewEncoder(w).Encode(body)
+					return
+				}
+				http.NotFound(w, r)
+			}))
+			defer srv.Close()
+
+			svc, err := calendar.NewService(context.Background(),
+				option.WithoutAuthentication(),
+				option.WithHTTPClient(srv.Client()),
+				option.WithEndpoint(srv.URL+"/"),
+			)
+			if err != nil {
+				t.Fatalf("NewService: %v", err)
+			}
+
+			ctx := withCalendarTestService(newCmdRuntimeOutputContext(t, io.Discard, io.Discard), svc)
+			flags := &RootFlags{Account: "a@b.com"}
+
+			cmd := &CalendarProposeTimeCmd{}
+			err = runKong(t, cmd, []string{"cal1@example.com", "evt1", "--decline"}, ctx, flags)
+			if err == nil {
+				t.Fatal("expected decline validation error")
+			}
+			if got := ExitCode(err); got != 2 {
+				t.Fatalf("ExitCode = %d, want 2 (err=%v)", got, err)
+			}
+			if !strings.Contains(err.Error(), tt.wantErr) {
+				t.Fatalf("error = %v, want %q", err, tt.wantErr)
+			}
+		})
+	}
+}
+
+func TestCalendarProposeTimeCmd_WithDecline(t *testing.T) {
 	var patchCalled bool
 	var patchedComment string
 	var sendUpdates string
@@ -279,21 +313,15 @@ func TestCalendarProposeTimeCmd_WithDecline(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewService: %v", err)
 	}
-	newCalendarService = func(context.Context, string) (*calendar.Service, error) { return svc, nil }
 
 	flags := &RootFlags{Account: "a@b.com"}
-	out := captureStdout(t, func() {
-		u, uiErr := ui.New(ui.Options{Stdout: os.Stdout, Stderr: io.Discard, Color: "never"})
-		if uiErr != nil {
-			t.Fatalf("ui.New: %v", uiErr)
-		}
-		ctx := ui.WithUI(context.Background(), u)
-
-		cmd := &CalendarProposeTimeCmd{}
-		if err := runKong(t, cmd, []string{"cal1@example.com", "evt1", "--comment", "Can we do 5pm instead?"}, ctx, flags); err != nil {
-			t.Fatalf("propose-time with decline: %v", err)
-		}
-	})
+	var output bytes.Buffer
+	ctx := withCalendarTestService(newCmdRuntimeOutputContext(t, &output, io.Discard), svc)
+	cmd := &CalendarProposeTimeCmd{}
+	if err := runKong(t, cmd, []string{"cal1@example.com", "evt1", "--comment", "Can we do 5pm instead?"}, ctx, flags); err != nil {
+		t.Fatalf("propose-time with decline: %v", err)
+	}
+	out := output.String()
 
 	if !patchCalled {
 		t.Error("PATCH was not called despite --comment flag")

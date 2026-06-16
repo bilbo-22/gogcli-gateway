@@ -3,11 +3,11 @@ package cmd
 import (
 	"context"
 	"fmt"
-	"os"
 	"strings"
 
 	"google.golang.org/api/slides/v1"
 
+	"github.com/steipete/gogcli/internal/outfmt"
 	"github.com/steipete/gogcli/internal/ui"
 )
 
@@ -21,28 +21,12 @@ type SlidesUpdateNotesCmd struct {
 func (c *SlidesUpdateNotesCmd) Run(ctx context.Context, flags *RootFlags) error {
 	u := ui.FromContext(ctx)
 
-	// Resolve notes: --notes-file takes precedence over --notes.
-	var notes string
-	updateNotes := false
-	if c.NotesFile != "" {
-		data, err := os.ReadFile(c.NotesFile)
-		if err != nil {
-			return fmt.Errorf("read notes file: %w", err)
-		}
-		notes = string(data)
-		updateNotes = true
-	} else if c.Notes != nil {
-		notes = *c.Notes
-		updateNotes = true
-	}
-
-	if !updateNotes {
-		return usage("provide --notes or --notes-file")
-	}
-
-	account, err := requireAccount(flags)
+	notes, updateNotes, err := resolveSlidesNotesInput(c.Notes, c.NotesFile)
 	if err != nil {
 		return err
+	}
+	if !updateNotes {
+		return usage("provide --notes or --notes-file")
 	}
 
 	presentationID := strings.TrimSpace(c.PresentationID)
@@ -54,7 +38,20 @@ func (c *SlidesUpdateNotesCmd) Run(ctx context.Context, flags *RootFlags) error 
 		return usage("empty slideId")
 	}
 
-	slidesSvc, err := newSlidesService(ctx, account)
+	if dryRunErr := dryRunExit(ctx, flags, "slides.update-notes", map[string]any{
+		"presentation_id": presentationID,
+		"slide_id":        slideID,
+		"notes_length":    len(notes),
+	}); dryRunErr != nil {
+		return dryRunErr
+	}
+
+	account, err := requireAccount(flags)
+	if err != nil {
+		return err
+	}
+
+	slidesSvc, err := slidesService(ctx, account)
 	if err != nil {
 		return err
 	}
@@ -64,64 +61,35 @@ func (c *SlidesUpdateNotesCmd) Run(ctx context.Context, flags *RootFlags) error 
 		return fmt.Errorf("get presentation: %w", err)
 	}
 
-	// Find the target slide.
-	var found bool
-	var notesObjectID string
-	for _, s := range pres.Slides {
-		if s.ObjectId != slideID {
-			continue
-		}
-		found = true
-		if np := s.SlideProperties.NotesPage; np != nil {
-			if np.NotesProperties != nil {
-				notesObjectID = np.NotesProperties.SpeakerNotesObjectId
-			}
-			if notesObjectID == "" {
-				for _, el := range np.PageElements {
-					if el.Shape != nil && el.Shape.Placeholder != nil &&
-						el.Shape.Placeholder.Type == placeholderTypeBody {
-						notesObjectID = el.ObjectId
-						break
-					}
-				}
-			}
-		}
-		break
-	}
-
-	if !found {
+	slide, _ := findSlidesPageByID(pres, slideID)
+	if slide == nil {
 		return fmt.Errorf("slide %q not found in presentation", slideID)
 	}
+	notesObjectID := findSpeakerNotesObjectID(slide)
 	if notesObjectID == "" {
 		return fmt.Errorf("could not find speaker notes placeholder on slide %s", slideID)
 	}
 
-	requests := []*slides.Request{
-		{
-			DeleteText: &slides.DeleteTextRequest{
-				ObjectId: notesObjectID,
-				TextRange: &slides.Range{
-					Type: "ALL",
-				},
-			},
-		},
+	notesPage := slide.SlideProperties.NotesPage
+	requests := buildSlidesReplaceTextRequests(notesObjectID, notes, slidesPageElementHasText(notesPage, notesObjectID))
+	if len(requests) > 0 {
+		_, err = slidesSvc.Presentations.BatchUpdate(presentationID, &slides.BatchUpdatePresentationRequest{
+			Requests: requests,
+		}).Context(ctx).Do()
+		if err != nil {
+			return fmt.Errorf("update speaker notes: %w", err)
+		}
 	}
-	if notes != "" {
-		requests = append(requests, &slides.Request{
-			InsertText: &slides.InsertTextRequest{
-				ObjectId: notesObjectID,
-				Text:     notes,
-			},
+
+	if outfmt.IsJSON(ctx) {
+		return outfmt.WriteJSON(ctx, stdoutWriter(ctx), map[string]any{
+			"presentationId": presentationID,
+			"slideObjectId":  slideID,
+			"notesLength":    len(notes),
+			"requests":       len(requests),
 		})
 	}
 
-	_, err = slidesSvc.Presentations.BatchUpdate(presentationID, &slides.BatchUpdatePresentationRequest{
-		Requests: requests,
-	}).Context(ctx).Do()
-	if err != nil {
-		return fmt.Errorf("update speaker notes: %w", err)
-	}
-
-	u.Out().Printf("Updated notes on slide %s", slideID)
+	u.Out().Linef("Updated notes on slide %s", slideID)
 	return nil
 }

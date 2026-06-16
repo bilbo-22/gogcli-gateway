@@ -3,7 +3,6 @@ package cmd
 import (
 	"context"
 	"fmt"
-	"os"
 	"sort"
 	"strings"
 	"sync"
@@ -40,18 +39,20 @@ type teamEvent struct {
 
 func (c *CalendarTeamCmd) Run(ctx context.Context, flags *RootFlags) error {
 	u := ui.FromContext(ctx)
-	account, err := requireAccount(flags)
-	if err != nil {
-		return err
-	}
-
 	groupEmail := strings.TrimSpace(c.GroupEmail)
 	if groupEmail == "" {
 		return usage("group email required")
 	}
+	if c.Max <= 0 {
+		return usage("max must be > 0")
+	}
+	account, err := requireGroupsAuthAccount(flags)
+	if err != nil {
+		return err
+	}
 
 	// Get calendar service first (for timezone resolution)
-	calSvc, err := newCalendarService(ctx, account)
+	calSvc, err := calendarService(ctx, account)
 	if err != nil {
 		return fmt.Errorf("calendar service: %w", err)
 	}
@@ -63,18 +64,18 @@ func (c *CalendarTeamCmd) Run(ctx context.Context, flags *RootFlags) error {
 	}
 
 	// Get group members via Cloud Identity API
-	cloudSvc, err := newCloudIdentityService(ctx, account)
+	cloudSvc, err := cloudIdentityService(ctx, account)
 	if err != nil {
 		return wrapCloudIdentityError(err, account)
 	}
 
 	memberEmails, err := collectGroupMemberEmails(ctx, cloudSvc, groupEmail)
 	if err != nil {
-		return fmt.Errorf("failed to list group members: %w", err)
+		return fmt.Errorf("failed to list group members: %w", wrapCloudIdentityError(err, account))
 	}
 
 	if len(memberEmails) == 0 {
-		u.Err().Printf("No user members in group %s", groupEmail)
+		u.Err().Linef("No user members in group %s", groupEmail)
 		return nil
 	}
 
@@ -100,20 +101,14 @@ func (c *CalendarTeamCmd) runFreeBusy(ctx context.Context, svc *calendar.Service
 		return fmt.Errorf("freebusy query: %w", err)
 	}
 
-	type busyResult struct {
-		Email  string   `json:"email"`
-		Busy   []string `json:"busy"`
-		Errors []string `json:"errors,omitempty"`
-	}
-
-	results := make([]busyResult, 0, len(emails))
+	results := make([]calendarTeamBusyResult, 0, len(emails))
 	for _, email := range emails {
 		cal, ok := resp.Calendars[email]
 		if !ok {
 			continue
 		}
 
-		result := busyResult{Email: email}
+		result := calendarTeamBusyResult{Email: email}
 
 		// Check for errors
 		if len(cal.Errors) > 0 {
@@ -136,7 +131,7 @@ func (c *CalendarTeamCmd) runFreeBusy(ctx context.Context, svc *calendar.Service
 	}
 
 	if outfmt.IsJSON(ctx) {
-		return outfmt.WriteJSON(ctx, os.Stdout, map[string]any{
+		return outfmt.WriteJSON(ctx, stdoutWriter(ctx), map[string]any{
 			"group":    c.GroupEmail,
 			"timeMin":  tr.From.Format(time.RFC3339),
 			"timeMax":  tr.To.Format(time.RFC3339),
@@ -145,21 +140,7 @@ func (c *CalendarTeamCmd) runFreeBusy(ctx context.Context, svc *calendar.Service
 		})
 	}
 
-	// Text output
-	w, flush := tableWriter(ctx)
-	defer flush()
-	fmt.Fprintln(w, "WHO\tBUSY BLOCKS")
-	for _, r := range results {
-		busyStr := strings.Join(r.Busy, ", ")
-		if busyStr == "" {
-			busyStr = "(free)"
-		}
-		if len(r.Errors) > 0 {
-			busyStr = "error: " + strings.Join(r.Errors, ", ")
-		}
-		fmt.Fprintf(w, "%s\t%s\n", sanitizeTab(r.Email), sanitizeTab(busyStr))
-	}
-	return nil
+	return outfmt.WriteTable(ctx, stdoutWriter(ctx), results, calendarTeamBusyColumns())
 }
 
 func (c *CalendarTeamCmd) runEvents(ctx context.Context, svc *calendar.Service, u *ui.UI, emails []string, tr *TimeRange) error {
@@ -251,7 +232,7 @@ func (c *CalendarTeamCmd) runEvents(ctx context.Context, svc *calendar.Service, 
 
 	// Print warnings for errors
 	for _, e := range errors {
-		u.Err().Printf("Warning: %s", e)
+		u.Err().Linef("Warning: %s", e)
 	}
 
 	// Sort by start time
@@ -265,7 +246,7 @@ func (c *CalendarTeamCmd) runEvents(ctx context.Context, svc *calendar.Service, 
 	}
 
 	if outfmt.IsJSON(ctx) {
-		return outfmt.WriteJSON(ctx, os.Stdout, map[string]any{
+		return outfmt.WriteJSON(ctx, stdoutWriter(ctx), map[string]any{
 			"group":    c.GroupEmail,
 			"timeMin":  tr.From.Format(time.RFC3339),
 			"timeMax":  tr.To.Format(time.RFC3339),
@@ -279,18 +260,7 @@ func (c *CalendarTeamCmd) runEvents(ctx context.Context, svc *calendar.Service, 
 		return nil
 	}
 
-	w, flush := tableWriter(ctx)
-	defer flush()
-	fmt.Fprintln(w, "WHO\tSTART\tEND\tSUMMARY")
-	for _, ev := range events {
-		fmt.Fprintf(w, "%s\t%s\t%s\t%s\n",
-			sanitizeTab(ev.Who),
-			sanitizeTab(ev.Start),
-			sanitizeTab(ev.End),
-			sanitizeTab(truncate(ev.Summary, 40)),
-		)
-	}
-	return nil
+	return outfmt.WriteTable(ctx, stdoutWriter(ctx), events, calendarTeamEventColumns())
 }
 
 func formatEventTime(ev *calendar.Event, loc *time.Location) (start, end string) {

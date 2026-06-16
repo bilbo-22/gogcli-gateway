@@ -3,7 +3,6 @@ package cmd
 import (
 	"context"
 	"fmt"
-	"os"
 	"strings"
 
 	"google.golang.org/api/classroom/v1"
@@ -21,8 +20,8 @@ type ClassroomInvitationsCmd struct {
 }
 
 type ClassroomInvitationsListCmd struct {
-	CourseID  string `name:"course" help:"Filter by course ID"`
-	UserID    string `name:"user" help:"Filter by user ID or email"`
+	CourseID  string `name:"course" help:"Filter by course ID (required when --user is omitted)"`
+	UserID    string `name:"user" help:"Filter by user ID or email (required when --course is omitted)"`
 	Max       int64  `name:"max" aliases:"limit" help:"Max results" default:"100"`
 	Page      string `name:"page" aliases:"cursor" help:"Page token"`
 	All       bool   `name:"all" aliases:"all-pages,allpages" help:"Fetch all pages"`
@@ -31,12 +30,18 @@ type ClassroomInvitationsListCmd struct {
 
 func (c *ClassroomInvitationsListCmd) Run(ctx context.Context, flags *RootFlags) error {
 	u := ui.FromContext(ctx)
+	if strings.TrimSpace(c.CourseID) == "" && strings.TrimSpace(c.UserID) == "" {
+		return usage("at least one of --course or --user is required")
+	}
+	if c.Max <= 0 {
+		return usage("max must be > 0")
+	}
 	account, err := requireAccount(flags)
 	if err != nil {
 		return err
 	}
 
-	svc, err := newClassroomService(ctx, account)
+	svc, err := classroomService(ctx, account)
 	if err != nil {
 		return wrapClassroomError(err)
 	}
@@ -53,31 +58,21 @@ func (c *ClassroomInvitationsListCmd) Run(ctx context.Context, flags *RootFlags)
 			call.UserId(v)
 		}
 
-		resp, err := call.Do()
-		if err != nil {
-			return nil, "", wrapClassroomError(err)
+		resp, callErr := call.Do()
+		if callErr != nil {
+			return nil, "", wrapClassroomError(callErr)
 		}
 		return resp.Invitations, resp.NextPageToken, nil
 	}
 
-	var invitations []*classroom.Invitation
-	nextPageToken := ""
-	if c.All {
-		all, err := collectAllPages(c.Page, fetch)
-		if err != nil {
-			return err
-		}
-		invitations = all
-	} else {
-		var err error
-		invitations, nextPageToken, err = fetch(c.Page)
-		if err != nil {
-			return err
-		}
+	invitations, nextPageToken, err := loadPagedItems(c.Page, c.All, fetch)
+	if err != nil {
+		return err
 	}
+	invitations = nonNilClassroomItems(invitations)
 
 	if outfmt.IsJSON(ctx) {
-		if err := outfmt.WriteJSON(ctx, os.Stdout, map[string]any{
+		if err := outfmt.WriteJSON(ctx, stdoutWriter(ctx), map[string]any{
 			"invitations":   invitations,
 			"nextPageToken": nextPageToken,
 		}); err != nil {
@@ -94,21 +89,15 @@ func (c *ClassroomInvitationsListCmd) Run(ctx context.Context, flags *RootFlags)
 		return failEmptyExit(c.FailEmpty)
 	}
 
-	w, flush := tableWriter(ctx)
-	defer flush()
-	fmt.Fprintln(w, "ID\tCOURSE_ID\tUSER_ID\tROLE")
-	for _, inv := range invitations {
-		if inv == nil {
-			continue
-		}
-		fmt.Fprintf(w, "%s\t%s\t%s\t%s\n",
-			sanitizeTab(inv.Id),
-			sanitizeTab(inv.CourseId),
-			sanitizeTab(inv.UserId),
-			sanitizeTab(inv.Role),
-		)
+	if err := outfmt.WriteTable(
+		ctx,
+		stdoutWriter(ctx),
+		compactClassroomRows(invitations),
+		classroomInvitationColumns(),
+	); err != nil {
+		return err
 	}
-	printNextPageHint(u, nextPageToken)
+	printNextPageHintWithAll(u, nextPageToken, "--all/--all-pages")
 	return nil
 }
 
@@ -127,7 +116,7 @@ func (c *ClassroomInvitationsGetCmd) Run(ctx context.Context, flags *RootFlags) 
 		return usage("empty invitationId")
 	}
 
-	svc, err := newClassroomService(ctx, account)
+	svc, err := classroomService(ctx, account)
 	if err != nil {
 		return wrapClassroomError(err)
 	}
@@ -138,13 +127,13 @@ func (c *ClassroomInvitationsGetCmd) Run(ctx context.Context, flags *RootFlags) 
 	}
 
 	if outfmt.IsJSON(ctx) {
-		return outfmt.WriteJSON(ctx, os.Stdout, map[string]any{"invitation": inv})
+		return outfmt.WriteJSON(ctx, stdoutWriter(ctx), map[string]any{"invitation": inv})
 	}
 
-	u.Out().Printf("id\t%s", inv.Id)
-	u.Out().Printf("course_id\t%s", inv.CourseId)
-	u.Out().Printf("user_id\t%s", inv.UserId)
-	u.Out().Printf("role\t%s", inv.Role)
+	u.Out().Linef("id\t%s", inv.Id)
+	u.Out().Linef("course_id\t%s", inv.CourseId)
+	u.Out().Linef("user_id\t%s", inv.UserId)
+	u.Out().Linef("role\t%s", inv.Role)
 	return nil
 }
 
@@ -181,7 +170,7 @@ func (c *ClassroomInvitationsCreateCmd) Run(ctx context.Context, flags *RootFlag
 		return err
 	}
 
-	svc, err := newClassroomService(ctx, account)
+	svc, err := classroomService(ctx, account)
 	if err != nil {
 		return wrapClassroomError(err)
 	}
@@ -192,12 +181,12 @@ func (c *ClassroomInvitationsCreateCmd) Run(ctx context.Context, flags *RootFlag
 	}
 
 	if outfmt.IsJSON(ctx) {
-		return outfmt.WriteJSON(ctx, os.Stdout, map[string]any{"invitation": created})
+		return outfmt.WriteJSON(ctx, stdoutWriter(ctx), map[string]any{"invitation": created})
 	}
-	u.Out().Printf("id\t%s", created.Id)
-	u.Out().Printf("course_id\t%s", created.CourseId)
-	u.Out().Printf("user_id\t%s", created.UserId)
-	u.Out().Printf("role\t%s", created.Role)
+	u.Out().Linef("id\t%s", created.Id)
+	u.Out().Linef("course_id\t%s", created.CourseId)
+	u.Out().Linef("user_id\t%s", created.UserId)
+	u.Out().Linef("role\t%s", created.Role)
 	return nil
 }
 
@@ -223,7 +212,7 @@ func (c *ClassroomInvitationsAcceptCmd) Run(ctx context.Context, flags *RootFlag
 		return err
 	}
 
-	svc, err := newClassroomService(ctx, account)
+	svc, err := classroomService(ctx, account)
 	if err != nil {
 		return wrapClassroomError(err)
 	}
@@ -233,13 +222,13 @@ func (c *ClassroomInvitationsAcceptCmd) Run(ctx context.Context, flags *RootFlag
 	}
 
 	if outfmt.IsJSON(ctx) {
-		return outfmt.WriteJSON(ctx, os.Stdout, map[string]any{
+		return outfmt.WriteJSON(ctx, stdoutWriter(ctx), map[string]any{
 			"accepted":     true,
 			"invitationId": invitationID,
 		})
 	}
-	u.Out().Printf("accepted\ttrue")
-	u.Out().Printf("invitation_id\t%s", invitationID)
+	u.Out().Linef("accepted\ttrue")
+	u.Out().Linef("invitation_id\t%s", invitationID)
 	return nil
 }
 
@@ -254,7 +243,9 @@ func (c *ClassroomInvitationsDeleteCmd) Run(ctx context.Context, flags *RootFlag
 		return usage("empty invitationId")
 	}
 
-	if err := confirmDestructive(ctx, flags, fmt.Sprintf("delete invitation %s", invitationID)); err != nil {
+	if err := dryRunAndConfirmDestructive(ctx, flags, "classroom.invitations.delete", map[string]any{
+		"invitation_id": invitationID,
+	}, fmt.Sprintf("delete invitation %s", invitationID)); err != nil {
 		return err
 	}
 
@@ -263,7 +254,7 @@ func (c *ClassroomInvitationsDeleteCmd) Run(ctx context.Context, flags *RootFlag
 		return err
 	}
 
-	svc, err := newClassroomService(ctx, account)
+	svc, err := classroomService(ctx, account)
 	if err != nil {
 		return wrapClassroomError(err)
 	}

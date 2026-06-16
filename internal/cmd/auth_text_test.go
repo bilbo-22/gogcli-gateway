@@ -9,16 +9,15 @@ import (
 	"testing"
 	"time"
 
+	"github.com/steipete/gogcli/internal/app"
 	"github.com/steipete/gogcli/internal/config"
 	"github.com/steipete/gogcli/internal/secrets"
 )
 
 func TestAuthTextOutputs(t *testing.T) {
-	origOpen := openSecretsStore
-	t.Cleanup(func() { openSecretsStore = origOpen })
-
 	store := newMemSecretsStore()
-	openSecretsStore = func() (secrets.Store, error) { return store, nil }
+	runtime := runtimeWithAuthStore(store)
+	execute := func(args []string) error { return executeWithRuntime(args, runtime) }
 
 	if err := store.SetToken(config.DefaultClientName, "a@b.com", secrets.Token{
 		Services:     []string{"gmail"},
@@ -30,7 +29,7 @@ func TestAuthTextOutputs(t *testing.T) {
 
 	listOut := captureStdout(t, func() {
 		_ = captureStderr(t, func() {
-			if err := Execute([]string{"auth", "list"}); err != nil {
+			if err := execute([]string{"auth", "list"}); err != nil {
 				t.Fatalf("list: %v", err)
 			}
 		})
@@ -41,7 +40,7 @@ func TestAuthTextOutputs(t *testing.T) {
 
 	keysOut := captureStdout(t, func() {
 		_ = captureStderr(t, func() {
-			if err := Execute([]string{"auth", "tokens", "list"}); err != nil {
+			if err := execute([]string{"auth", "tokens", "list"}); err != nil {
 				t.Fatalf("tokens list: %v", err)
 			}
 		})
@@ -52,7 +51,7 @@ func TestAuthTextOutputs(t *testing.T) {
 
 	delOut := captureStdout(t, func() {
 		_ = captureStderr(t, func() {
-			if err := Execute([]string{"--force", "auth", "tokens", "delete", "a@b.com"}); err != nil {
+			if err := execute([]string{"--force", "auth", "tokens", "delete", "a@b.com"}); err != nil {
 				t.Fatalf("tokens delete: %v", err)
 			}
 		})
@@ -67,7 +66,7 @@ func TestAuthTextOutputs(t *testing.T) {
 	}
 	rmOut := captureStdout(t, func() {
 		_ = captureStderr(t, func() {
-			if err := Execute([]string{"--force", "auth", "remove", "a@b.com"}); err != nil {
+			if err := execute([]string{"--force", "auth", "remove", "a@b.com"}); err != nil {
 				t.Fatalf("remove: %v", err)
 			}
 		})
@@ -78,15 +77,12 @@ func TestAuthTextOutputs(t *testing.T) {
 }
 
 func TestAuthListAndTokens_NoTokens_Text(t *testing.T) {
-	origOpen := openSecretsStore
-	t.Cleanup(func() { openSecretsStore = origOpen })
-
 	store := newMemSecretsStore()
-	openSecretsStore = func() (secrets.Store, error) { return store, nil }
+	runtime := runtimeWithAuthStore(store)
 
 	errOut := captureStderr(t, func() {
 		_ = captureStdout(t, func() {
-			if err := Execute([]string{"auth", "list"}); err != nil {
+			if err := executeWithRuntime([]string{"auth", "list"}, runtime); err != nil {
 				t.Fatalf("list: %v", err)
 			}
 		})
@@ -97,7 +93,7 @@ func TestAuthListAndTokens_NoTokens_Text(t *testing.T) {
 
 	errOut = captureStderr(t, func() {
 		_ = captureStdout(t, func() {
-			if err := Execute([]string{"auth", "tokens", "list"}); err != nil {
+			if err := executeWithRuntime([]string{"auth", "tokens", "list"}, runtime); err != nil {
 				t.Fatalf("tokens list: %v", err)
 			}
 		})
@@ -108,33 +104,28 @@ func TestAuthListAndTokens_NoTokens_Text(t *testing.T) {
 }
 
 func TestAuthList_Check_Text(t *testing.T) {
-	origOpen := openSecretsStore
-	origCheck := checkRefreshToken
-	t.Cleanup(func() {
-		openSecretsStore = origOpen
-		checkRefreshToken = origCheck
-	})
-
 	store := newMemSecretsStore()
-	openSecretsStore = func() (secrets.Store, error) { return store, nil }
 
-	checkRefreshToken = func(_ context.Context, _ string, refreshToken string, _ []string, _ time.Duration) error {
-		if refreshToken == "bad" {
-			return errors.New("invalid_grant")
-		}
-		return nil
+	runtime := &app.Runtime{
+		Auth: app.AuthOperations{
+			OpenSecretsStore: func() (secrets.Store, error) { return store, nil },
+			CheckRefreshToken: func(_ context.Context, _ string, refreshToken string, _ []string, _ time.Duration) error {
+				if refreshToken == "bad" {
+					return errors.New("invalid_grant")
+				}
+				return nil
+			},
+		},
 	}
 
 	_ = store.SetToken(config.DefaultClientName, "a@b.com", secrets.Token{RefreshToken: "good"})
 	_ = store.SetToken(config.DefaultClientName, "b@b.com", secrets.Token{RefreshToken: "bad"})
 
-	out := captureStdout(t, func() {
-		_ = captureStderr(t, func() {
-			if err := Execute([]string{"auth", "list", "--check"}); err != nil {
-				t.Fatalf("list --check: %v", err)
-			}
-		})
-	})
+	result := executeWithTestRuntime(t, []string{"auth", "list", "--check"}, runtime)
+	if result.err != nil {
+		t.Fatalf("list --check: %v", result.err)
+	}
+	out := result.stdout
 	if !strings.Contains(out, "a@b.com") || !strings.Contains(out, "\ttrue\t") {
 		t.Fatalf("expected a@b.com valid in output: %q", out)
 	}
@@ -144,16 +135,10 @@ func TestAuthList_Check_Text(t *testing.T) {
 }
 
 func TestAuthTokensExportImport_Text(t *testing.T) {
-	origOpen := openSecretsStore
-	origKeychain := ensureKeychainAccess
-	t.Cleanup(func() {
-		openSecretsStore = origOpen
-		ensureKeychainAccess = origKeychain
-	})
-
-	ensureKeychainAccess = func() error { return nil }
 	store := newMemSecretsStore()
-	openSecretsStore = func() (secrets.Store, error) { return store, nil }
+	runtime := runtimeWithAuthStore(store)
+	runtime.Auth.EnsureKeychainAccess = func(context.Context) error { return nil }
+	execute := func(args []string) error { return executeWithRuntime(args, runtime) }
 
 	if err := store.SetToken(config.DefaultClientName, "a@b.com", secrets.Token{
 		RefreshToken: "rt",
@@ -164,7 +149,7 @@ func TestAuthTokensExportImport_Text(t *testing.T) {
 	outPath := filepath.Join(t.TempDir(), "token.json")
 	out := captureStdout(t, func() {
 		_ = captureStderr(t, func() {
-			if err := Execute([]string{"auth", "tokens", "export", "a@b.com", "--out", outPath}); err != nil {
+			if err := execute([]string{"auth", "tokens", "export", "a@b.com", "--out", outPath}); err != nil {
 				t.Fatalf("export: %v", err)
 			}
 		})
@@ -179,7 +164,7 @@ func TestAuthTokensExportImport_Text(t *testing.T) {
 
 	out = captureStdout(t, func() {
 		_ = captureStderr(t, func() {
-			if err := Execute([]string{"auth", "tokens", "import", outPath}); err != nil {
+			if err := execute([]string{"auth", "tokens", "import", outPath}); err != nil {
 				t.Fatalf("import: %v", err)
 			}
 		})
@@ -192,6 +177,8 @@ func TestAuthTokensExportImport_Text(t *testing.T) {
 func TestAuthCredentials_Text(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
+	t.Setenv("XDG_CONFIG_HOME", filepath.Join(home, "xdg-config"))
+	useFileKeyringForAuthCredentials(t)
 
 	in := filepath.Join(t.TempDir(), "creds.json")
 	if err := os.WriteFile(in, []byte(`{"installed":{"client_id":"id","client_secret":"sec"}}`), 0o600); err != nil {

@@ -38,7 +38,8 @@ func TestDownloadDriveFile_NonGoogleDoc(t *testing.T) {
 
 	tmp := t.TempDir()
 	dest := filepath.Join(tmp, "file.bin")
-	outPath, n, err := downloadDriveFile(context.Background(), svc, &drive.File{Id: "id1", MimeType: "application/pdf"}, dest, "")
+	ctx := withDriveTestOperations(context.Background(), svc, driveDownload, driveExportDownload)
+	outPath, n, err := downloadDriveFile(ctx, svc, &drive.File{Id: "id1", MimeType: "application/pdf"}, dest, "")
 	if err != nil {
 		t.Fatalf("downloadDriveFile: %v", err)
 	}
@@ -58,11 +59,8 @@ func TestDownloadDriveFile_NonGoogleDoc(t *testing.T) {
 }
 
 func TestDownloadDriveFile_NonGoogleDocFormatRejected(t *testing.T) {
-	origDownload := driveDownload
-	t.Cleanup(func() { driveDownload = origDownload })
-
 	called := false
-	driveDownload = func(context.Context, *drive.Service, string) (*http.Response, error) {
+	download := func(context.Context, *drive.Service, string) (*http.Response, error) {
 		called = true
 		return &http.Response{
 			Status:     "200 OK",
@@ -72,7 +70,8 @@ func TestDownloadDriveFile_NonGoogleDocFormatRejected(t *testing.T) {
 	}
 
 	dest := filepath.Join(t.TempDir(), "file.html")
-	_, _, err := downloadDriveFile(context.Background(), &drive.Service{}, &drive.File{Id: "id1", MimeType: "application/pdf"}, dest, "html")
+	ctx := withDriveTestOperations(context.Background(), &drive.Service{}, download, nil)
+	_, _, err := downloadDriveFile(ctx, &drive.Service{}, &drive.File{Id: "id1", MimeType: "application/pdf"}, dest, "html")
 	if err == nil {
 		t.Fatalf("expected error")
 	}
@@ -111,7 +110,8 @@ func TestDownloadDriveFile_GoogleDocExport(t *testing.T) {
 
 	tmp := t.TempDir()
 	dest := filepath.Join(tmp, "doc.txt")
-	outPath, n, err := downloadDriveFile(context.Background(), svc, &drive.File{Id: "id1", MimeType: "application/vnd.google-apps.document"}, dest, "")
+	ctx := withDriveTestOperations(context.Background(), svc, driveDownload, driveExportDownload)
+	outPath, n, err := downloadDriveFile(ctx, svc, &drive.File{Id: "id1", MimeType: "application/vnd.google-apps.document"}, dest, "")
 	if err != nil {
 		t.Fatalf("downloadDriveFile: %v", err)
 	}
@@ -131,9 +131,7 @@ func TestDownloadDriveFile_GoogleDocExport(t *testing.T) {
 }
 
 func TestDownloadDriveFile_HTTPError(t *testing.T) {
-	orig := driveDownload
-	t.Cleanup(func() { driveDownload = orig })
-	driveDownload = func(context.Context, *drive.Service, string) (*http.Response, error) {
+	download := func(context.Context, *drive.Service, string) (*http.Response, error) {
 		return &http.Response{
 			Status:     "403 Forbidden",
 			StatusCode: http.StatusForbidden,
@@ -143,7 +141,8 @@ func TestDownloadDriveFile_HTTPError(t *testing.T) {
 
 	tmp := t.TempDir()
 	dest := filepath.Join(tmp, "file.bin")
-	_, _, err := downloadDriveFile(context.Background(), &drive.Service{}, &drive.File{Id: "id1", MimeType: "application/pdf"}, dest, "")
+	ctx := withDriveTestOperations(context.Background(), &drive.Service{}, download, nil)
+	_, _, err := downloadDriveFile(ctx, &drive.Service{}, &drive.File{Id: "id1", MimeType: "application/pdf"}, dest, "")
 	if err == nil {
 		t.Fatalf("expected error")
 	}
@@ -152,10 +151,8 @@ func TestDownloadDriveFile_HTTPError(t *testing.T) {
 	}
 }
 
-func TestDownloadDriveFile_CreateError(t *testing.T) {
-	orig := driveDownload
-	t.Cleanup(func() { driveDownload = orig })
-	driveDownload = func(context.Context, *drive.Service, string) (*http.Response, error) {
+func TestDownloadDriveFile_CreatesMissingParentDirs(t *testing.T) {
+	download := func(context.Context, *drive.Service, string) (*http.Response, error) {
 		return &http.Response{
 			Status:     "200 OK",
 			StatusCode: http.StatusOK,
@@ -165,8 +162,22 @@ func TestDownloadDriveFile_CreateError(t *testing.T) {
 
 	tmp := t.TempDir()
 	dest := filepath.Join(tmp, "no-such-dir", "file.bin")
-	_, _, err := downloadDriveFile(context.Background(), &drive.Service{}, &drive.File{Id: "id1", MimeType: "application/pdf"}, dest, "")
-	if err == nil {
-		t.Fatalf("expected error")
+	ctx := withDriveTestOperations(context.Background(), &drive.Service{}, download, nil)
+	outPath, size, err := downloadDriveFile(ctx, &drive.Service{}, &drive.File{Id: "id1", MimeType: "application/pdf"}, dest, "")
+	if err != nil {
+		t.Fatalf("downloadDriveFile: %v", err)
+	}
+	if outPath != dest {
+		t.Fatalf("outPath=%q, want %q", outPath, dest)
+	}
+	if size != 1 {
+		t.Fatalf("size=%d, want 1", size)
+	}
+	data, readErr := os.ReadFile(dest)
+	if readErr != nil {
+		t.Fatalf("read: %v", readErr)
+	}
+	if string(data) != "x" {
+		t.Fatalf("data=%q, want %q", string(data), "x")
 	}
 }

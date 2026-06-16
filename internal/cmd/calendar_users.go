@@ -3,7 +3,6 @@ package cmd
 import (
 	"context"
 	"fmt"
-	"os"
 	"strings"
 	"time"
 
@@ -24,12 +23,15 @@ type CalendarUsersCmd struct {
 
 func (c *CalendarUsersCmd) Run(ctx context.Context, flags *RootFlags) error {
 	u := ui.FromContext(ctx)
+	if c.Max <= 0 {
+		return usage("max must be > 0")
+	}
 	account, err := requireAccount(flags)
 	if err != nil {
 		return err
 	}
 
-	svc, err := newPeopleDirectoryService(ctx, account)
+	svc, err := peopleDirectoryService(ctx, account)
 	if err != nil {
 		if strings.Contains(err.Error(), "accessNotConfigured") ||
 			strings.Contains(err.Error(), "People API has not been used") {
@@ -50,31 +52,20 @@ func (c *CalendarUsersCmd) Run(ctx context.Context, flags *RootFlags) error {
 		if strings.TrimSpace(pageToken) != "" {
 			call = call.PageToken(pageToken)
 		}
-		resp, err := call.Do()
-		if err != nil {
-			if strings.Contains(err.Error(), "accessNotConfigured") ||
-				strings.Contains(err.Error(), "People API has not been used") {
-				return nil, "", fmt.Errorf("people API is not enabled; enable it at: https://console.developers.google.com/apis/api/people.googleapis.com/overview (%w)", err)
+		resp, callErr := call.Do()
+		if callErr != nil {
+			if strings.Contains(callErr.Error(), "accessNotConfigured") ||
+				strings.Contains(callErr.Error(), "People API has not been used") {
+				return nil, "", fmt.Errorf("people API is not enabled; enable it at: https://console.developers.google.com/apis/api/people.googleapis.com/overview (%w)", callErr)
 			}
-			return nil, "", err
+			return nil, "", callErr
 		}
 		return resp.People, resp.NextPageToken, nil
 	}
 
-	var peopleList []*people.Person
-	nextPageToken := ""
-	if c.All {
-		all, err := collectAllPages(c.Page, fetch)
-		if err != nil {
-			return err
-		}
-		peopleList = all
-	} else {
-		var err error
-		peopleList, nextPageToken, err = fetch(c.Page)
-		if err != nil {
-			return err
-		}
+	peopleList, nextPageToken, err := loadPagedItems(c.Page, c.All, fetch)
+	if err != nil {
+		return err
 	}
 
 	if outfmt.IsJSON(ctx) {
@@ -96,7 +87,7 @@ func (c *CalendarUsersCmd) Run(ctx context.Context, flags *RootFlags) error {
 				Name:  primaryName(p),
 			})
 		}
-		if err := outfmt.WriteJSON(ctx, os.Stdout, map[string]any{
+		if err := outfmt.WriteJSON(ctx, stdoutWriter(ctx), map[string]any{
 			"users":         items,
 			"nextPageToken": nextPageToken,
 		}); err != nil {
@@ -113,31 +104,15 @@ func (c *CalendarUsersCmd) Run(ctx context.Context, flags *RootFlags) error {
 		return failEmptyExit(c.FailEmpty)
 	}
 
-	w, flush := tableWriter(ctx)
-	defer flush()
-	fmt.Fprintln(w, "EMAIL\tNAME")
-	firstEmail := ""
-	for _, p := range peopleList {
-		if p == nil {
-			continue
-		}
-		email := primaryEmail(p)
-		if email == "" {
-			continue
-		}
-		if firstEmail == "" {
-			firstEmail = email
-		}
-		fmt.Fprintf(w, "%s\t%s\n",
-			sanitizeTab(email),
-			sanitizeTab(primaryName(p)),
-		)
+	rows := calendarUserRows(peopleList)
+	if err := outfmt.WriteTable(ctx, stdoutWriter(ctx), rows, calendarUserColumns()); err != nil {
+		return err
 	}
-	printNextPageHint(u, nextPageToken)
+	printNextPageHintWithAll(u, nextPageToken, "--all/--all-pages")
 
 	u.Err().Println("\nTip: Use any email above as a calendar ID, e.g.:")
-	if firstEmail != "" {
-		u.Err().Printf("  gog calendar events %s", firstEmail)
+	if len(rows) > 0 {
+		u.Err().Linef("  gog calendar events %s", rows[0].Email)
 	}
 
 	return nil

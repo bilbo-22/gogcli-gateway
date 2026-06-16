@@ -7,21 +7,42 @@ import (
 	"testing"
 
 	"google.golang.org/api/gmail/v1"
-	"google.golang.org/api/option"
+
+	"github.com/steipete/gogcli/internal/app"
 )
 
 func newGmailServiceForTest(t *testing.T, h http.HandlerFunc) (*gmail.Service, func()) {
 	t.Helper()
 
-	srv := httptest.NewServer(h)
-	svc, err := gmail.NewService(context.Background(),
-		option.WithoutAuthentication(),
-		option.WithHTTPClient(srv.Client()),
-		option.WithEndpoint(srv.URL+"/"),
-	)
-	if err != nil {
-		srv.Close()
-		t.Fatalf("NewService: %v", err)
+	return newGoogleTestService(t, h, gmail.NewService)
+}
+
+func newGmailServiceFromServer(t *testing.T, srv *httptest.Server) *gmail.Service {
+	t.Helper()
+	return newGoogleTestServiceWithEndpoint(t, srv.Client(), srv.URL+"/", gmail.NewService)
+}
+
+func withGmailTestService(ctx context.Context, svc *gmail.Service) context.Context {
+	return withGmailTestServiceFactory(ctx, func(context.Context, string) (*gmail.Service, error) {
+		return svc, nil
+	})
+}
+
+func withGmailTestServiceFactory(ctx context.Context, factory app.GmailServiceFactory) context.Context {
+	if ctx == nil {
+		ctx = context.Background()
 	}
-	return svc, srv.Close
+	runtime := &app.Runtime{}
+	if existing, ok := app.FromContext(ctx); ok {
+		*runtime = *existing
+	}
+	runtime.Services.Gmail = factory
+	return app.WithRuntime(ctx, runtime)
+}
+
+func executeWithGmailTestService(t *testing.T, args []string, svc *gmail.Service) executeTestResult {
+	t.Helper()
+	return executeWithTestRuntime(t, args, &app.Runtime{Services: app.Services{
+		Gmail: func(context.Context, string) (*gmail.Service, error) { return svc, nil },
+	}})
 }

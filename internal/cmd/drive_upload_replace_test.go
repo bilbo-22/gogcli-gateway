@@ -16,15 +16,9 @@ import (
 
 	"google.golang.org/api/drive/v3"
 	"google.golang.org/api/option"
-
-	"github.com/steipete/gogcli/internal/outfmt"
-	"github.com/steipete/gogcli/internal/ui"
 )
 
 func TestDriveUpload_Replace_JSON(t *testing.T) {
-	origNew := newDriveService
-	t.Cleanup(func() { newDriveService = origNew })
-
 	var sawPatch bool
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		// Drive service is configured with endpoint srv.URL+"/", so API calls are rooted at /drive/v3.
@@ -67,7 +61,6 @@ func TestDriveUpload_Replace_JSON(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewService: %v", err)
 	}
-	newDriveService = func(context.Context, string) (*drive.Service, error) { return svc, nil }
 
 	local := filepath.Join(t.TempDir(), "upload.pdf")
 	if writeErr := os.WriteFile(local, []byte("%PDF-1.4"), 0o600); writeErr != nil {
@@ -75,19 +68,12 @@ func TestDriveUpload_Replace_JSON(t *testing.T) {
 	}
 
 	flags := &RootFlags{Account: "a@b.com", Force: true}
-	u, uiErr := ui.New(ui.Options{Stdout: io.Discard, Stderr: io.Discard, Color: "never"})
-	if uiErr != nil {
-		t.Fatalf("ui.New: %v", uiErr)
+	var out bytes.Buffer
+	ctx := withDriveTestService(newCmdRuntimeJSONOutputContext(t, &out, io.Discard), svc)
+	cmd := &DriveUploadCmd{}
+	if err := runKong(t, cmd, []string{local, "--replace", "file1"}, ctx, flags); err != nil {
+		t.Fatalf("replace: %v", err)
 	}
-	ctx := ui.WithUI(context.Background(), u)
-	ctx = outfmt.WithMode(ctx, outfmt.Mode{JSON: true})
-
-	out := captureStdout(t, func() {
-		cmd := &DriveUploadCmd{}
-		if err := runKong(t, cmd, []string{local, "--replace", "file1"}, ctx, flags); err != nil {
-			t.Fatalf("replace: %v", err)
-		}
-	})
 	if !sawPatch {
 		t.Fatalf("expected PATCH upload")
 	}
@@ -97,8 +83,8 @@ func TestDriveUpload_Replace_JSON(t *testing.T) {
 		Replaced        bool        `json:"replaced"`
 		PreservedFileID bool        `json:"preservedFileId"`
 	}
-	if err := json.Unmarshal([]byte(strings.TrimSpace(out)), &got); err != nil {
-		t.Fatalf("unmarshal: %v (out=%q)", err, out)
+	if err := json.Unmarshal([]byte(strings.TrimSpace(out.String())), &got); err != nil {
+		t.Fatalf("unmarshal: %v (out=%q)", err, out.String())
 	}
 	if got.File == nil || got.File.Id != "file1" {
 		t.Fatalf("unexpected file: %#v", got.File)
@@ -112,9 +98,6 @@ func TestDriveUpload_Replace_JSON(t *testing.T) {
 }
 
 func TestDriveUpload_Replace_Text(t *testing.T) {
-	origNew := newDriveService
-	t.Cleanup(func() { newDriveService = origNew })
-
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		path := strings.TrimPrefix(r.URL.Path, "/drive/v3")
 
@@ -152,7 +135,6 @@ func TestDriveUpload_Replace_Text(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewService: %v", err)
 	}
-	newDriveService = func(context.Context, string) (*drive.Service, error) { return svc, nil }
 
 	local := filepath.Join(t.TempDir(), "upload.pdf")
 	if writeErr := os.WriteFile(local, []byte("%PDF-1.4"), 0o600); writeErr != nil {
@@ -161,11 +143,7 @@ func TestDriveUpload_Replace_Text(t *testing.T) {
 
 	flags := &RootFlags{Account: "a@b.com", Force: true}
 	var outBuf bytes.Buffer
-	u, uiErr := ui.New(ui.Options{Stdout: &outBuf, Stderr: io.Discard, Color: "never"})
-	if uiErr != nil {
-		t.Fatalf("ui.New: %v", uiErr)
-	}
-	ctx := ui.WithUI(context.Background(), u)
+	ctx := withDriveTestService(newCmdRuntimeOutputContext(t, &outBuf, io.Discard), svc)
 
 	cmd := &DriveUploadCmd{}
 	if err := runKong(t, cmd, []string{local, "--replace", "file1", "--name", "Renamed.pdf"}, ctx, flags); err != nil {
@@ -183,11 +161,7 @@ func TestDriveUpload_Replace_Text(t *testing.T) {
 
 func TestDriveUpload_Replace_ParentValidation(t *testing.T) {
 	flags := &RootFlags{Account: "a@b.com"}
-	u, uiErr := ui.New(ui.Options{Stdout: io.Discard, Stderr: io.Discard, Color: "never"})
-	if uiErr != nil {
-		t.Fatalf("ui.New: %v", uiErr)
-	}
-	ctx := ui.WithUI(context.Background(), u)
+	ctx := newCmdRuntimeOutputContext(t, io.Discard, io.Discard)
 
 	tmp := filepath.Join(t.TempDir(), "upload.bin")
 	if err := os.WriteFile(tmp, []byte("abc"), 0o600); err != nil {
@@ -209,9 +183,6 @@ func TestDriveUpload_Replace_ParentValidation(t *testing.T) {
 }
 
 func TestDriveUpload_Replace_GoogleWorkspaceUnsupported(t *testing.T) {
-	origNew := newDriveService
-	t.Cleanup(func() { newDriveService = origNew })
-
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		path := strings.TrimPrefix(r.URL.Path, "/drive/v3")
 		switch {
@@ -238,7 +209,6 @@ func TestDriveUpload_Replace_GoogleWorkspaceUnsupported(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewService: %v", err)
 	}
-	newDriveService = func(context.Context, string) (*drive.Service, error) { return svc, nil }
 
 	local := filepath.Join(t.TempDir(), "upload.pdf")
 	if writeErr := os.WriteFile(local, []byte("%PDF-1.4"), 0o600); writeErr != nil {
@@ -246,27 +216,21 @@ func TestDriveUpload_Replace_GoogleWorkspaceUnsupported(t *testing.T) {
 	}
 
 	flags := &RootFlags{Account: "a@b.com", Force: true}
-	u, uiErr := ui.New(ui.Options{Stdout: io.Discard, Stderr: io.Discard, Color: "never"})
-	if uiErr != nil {
-		t.Fatalf("ui.New: %v", uiErr)
-	}
-	ctx := ui.WithUI(context.Background(), u)
+	ctx := withDriveTestService(newCmdRuntimeOutputContext(t, io.Discard, io.Discard), svc)
 
 	cmd := &DriveUploadCmd{}
 	if err := runKong(t, cmd, []string{local, "--replace", "doc1"}, ctx, flags); err == nil {
 		t.Fatalf("expected error")
 	} else if !strings.Contains(err.Error(), "Google Workspace") {
 		t.Fatalf("unexpected error: %v", err)
+	} else if got := ExitCode(err); got != 2 {
+		t.Fatalf("expected usage exit code 2, got %d (err=%v)", got, err)
 	}
 }
 
 func TestDriveUpload_Replace_ConvertValidation(t *testing.T) {
 	flags := &RootFlags{Account: "a@b.com"}
-	u, uiErr := ui.New(ui.Options{Stdout: io.Discard, Stderr: io.Discard, Color: "never"})
-	if uiErr != nil {
-		t.Fatalf("ui.New: %v", uiErr)
-	}
-	ctx := ui.WithUI(context.Background(), u)
+	ctx := newCmdRuntimeOutputContext(t, io.Discard, io.Discard)
 
 	tmp := filepath.Join(t.TempDir(), "upload.bin")
 	if err := os.WriteFile(tmp, []byte("abc"), 0o600); err != nil {
@@ -288,9 +252,6 @@ func TestDriveUpload_Replace_ConvertValidation(t *testing.T) {
 }
 
 func TestDriveUpload_Replace_KeepRevisionForeverAndMimeType(t *testing.T) {
-	origNew := newDriveService
-	t.Cleanup(func() { newDriveService = origNew })
-
 	const customMimeType = "application/x-custom-pdf"
 	var sawKeepRevisionForever bool
 	var sawMimeType bool
@@ -339,7 +300,6 @@ func TestDriveUpload_Replace_KeepRevisionForeverAndMimeType(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewService: %v", err)
 	}
-	newDriveService = func(context.Context, string) (*drive.Service, error) { return svc, nil }
 
 	local := filepath.Join(t.TempDir(), "upload.pdf")
 	if writeErr := os.WriteFile(local, []byte("%PDF-1.4"), 0o600); writeErr != nil {
@@ -347,11 +307,7 @@ func TestDriveUpload_Replace_KeepRevisionForeverAndMimeType(t *testing.T) {
 	}
 
 	flags := &RootFlags{Account: "a@b.com", Force: true}
-	u, uiErr := ui.New(ui.Options{Stdout: io.Discard, Stderr: io.Discard, Color: "never"})
-	if uiErr != nil {
-		t.Fatalf("ui.New: %v", uiErr)
-	}
-	ctx := ui.WithUI(context.Background(), u)
+	ctx := withDriveTestService(newCmdRuntimeOutputContext(t, io.Discard, io.Discard), svc)
 
 	cmd := &DriveUploadCmd{}
 	if err := runKong(t, cmd, []string{local, "--replace", "file1", "--keep-revision-forever", "--mime-type", customMimeType}, ctx, flags); err != nil {
@@ -366,9 +322,6 @@ func TestDriveUpload_Replace_KeepRevisionForeverAndMimeType(t *testing.T) {
 }
 
 func TestDriveUpload_Create_KeepRevisionForever(t *testing.T) {
-	origNew := newDriveService
-	t.Cleanup(func() { newDriveService = origNew })
-
 	var sawKeepRevisionForever bool
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch {
@@ -399,7 +352,6 @@ func TestDriveUpload_Create_KeepRevisionForever(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewService: %v", err)
 	}
-	newDriveService = func(context.Context, string) (*drive.Service, error) { return svc, nil }
 
 	local := filepath.Join(t.TempDir(), "upload.pdf")
 	if writeErr := os.WriteFile(local, []byte("%PDF-1.4"), 0o600); writeErr != nil {
@@ -407,11 +359,7 @@ func TestDriveUpload_Create_KeepRevisionForever(t *testing.T) {
 	}
 
 	flags := &RootFlags{Account: "a@b.com", Force: true}
-	u, uiErr := ui.New(ui.Options{Stdout: io.Discard, Stderr: io.Discard, Color: "never"})
-	if uiErr != nil {
-		t.Fatalf("ui.New: %v", uiErr)
-	}
-	ctx := ui.WithUI(context.Background(), u)
+	ctx := withDriveTestService(newCmdRuntimeOutputContext(t, io.Discard, io.Discard), svc)
 
 	cmd := &DriveUploadCmd{}
 	if err := runKong(t, cmd, []string{local, "--keep-revision-forever"}, ctx, flags); err != nil {

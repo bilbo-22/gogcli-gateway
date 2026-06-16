@@ -3,6 +3,7 @@ package googleapi
 import (
 	"errors"
 	"fmt"
+	"strings"
 	"time"
 )
 
@@ -23,6 +24,48 @@ func (e *AuthRequiredError) Error() string {
 
 func (e *AuthRequiredError) Unwrap() error {
 	return e.Cause
+}
+
+type InsufficientScopeError struct {
+	Service            string
+	Email              string
+	RequiredScopes     []string
+	GrantedScopes      []string
+	ReauthorizeCommand string
+}
+
+func (e *InsufficientScopeError) Error() string {
+	message := fmt.Sprintf(
+		"OAuth grant for %s is missing required %s scope: %s",
+		e.Email,
+		e.Service,
+		strings.Join(e.RequiredScopes, ", "),
+	)
+	if e.ReauthorizeCommand != "" {
+		message += "; re-authenticate with: " + e.ReauthorizeCommand
+	}
+
+	return message
+}
+
+// HTTPStatusError preserves status metadata from Google APIs implemented with
+// direct HTTP clients while retaining the service-specific error text.
+type HTTPStatusError struct {
+	Code   int
+	Status string
+	Err    error
+}
+
+func (e *HTTPStatusError) Error() string {
+	if e.Err != nil {
+		return e.Err.Error()
+	}
+
+	return fmt.Sprintf("HTTP %d", e.Code)
+}
+
+func (e *HTTPStatusError) Unwrap() error {
+	return e.Err
 }
 
 // RateLimitError indicates rate limit was exceeded
@@ -90,6 +133,12 @@ func (e *PermissionDeniedError) Error() string {
 // IsAuthRequiredError checks if the error is an auth required error
 func IsAuthRequiredError(err error) bool {
 	var e *AuthRequiredError
+	return errors.As(err, &e)
+}
+
+// IsInsufficientScopeError checks if the stored OAuth grant lacks a required scope.
+func IsInsufficientScopeError(err error) bool {
+	var e *InsufficientScopeError
 	return errors.As(err, &e)
 }
 

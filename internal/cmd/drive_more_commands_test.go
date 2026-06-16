@@ -1,6 +1,7 @@
 package cmd
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"io"
@@ -13,20 +14,10 @@ import (
 
 	"google.golang.org/api/drive/v3"
 	"google.golang.org/api/option"
-
-	"github.com/steipete/gogcli/internal/outfmt"
-	"github.com/steipete/gogcli/internal/ui"
 )
 
 func TestDriveGetDownloadUploadURL_JSON(t *testing.T) {
-	origNew := newDriveService
-	origDownload := driveDownload
-	t.Cleanup(func() {
-		newDriveService = origNew
-		driveDownload = origDownload
-	})
-
-	driveDownload = func(context.Context, *drive.Service, string) (*http.Response, error) {
+	download := func(context.Context, *drive.Service, string) (*http.Response, error) {
 		return &http.Response{
 			StatusCode: http.StatusOK,
 			Body:       io.NopCloser(strings.NewReader("filedata")),
@@ -78,30 +69,22 @@ func TestDriveGetDownloadUploadURL_JSON(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewService: %v", err)
 	}
-	newDriveService = func(context.Context, string) (*drive.Service, error) { return svc, nil }
 
 	flags := &RootFlags{Account: "a@b.com", Force: true}
-	u, uiErr := ui.New(ui.Options{Stdout: io.Discard, Stderr: io.Discard, Color: "never"})
-	if uiErr != nil {
-		t.Fatalf("ui.New: %v", uiErr)
-	}
-	ctx := ui.WithUI(context.Background(), u)
-	ctx = outfmt.WithMode(ctx, outfmt.Mode{JSON: true})
+	var stdout bytes.Buffer
+	ctx := withDriveTestOperations(newCmdRuntimeJSONOutputContext(t, &stdout, io.Discard), svc, download, nil)
 
-	_ = captureStdout(t, func() {
-		cmd := &DriveGetCmd{}
-		if err := runKong(t, cmd, []string{"file1"}, ctx, flags); err != nil {
-			t.Fatalf("get: %v", err)
-		}
-	})
+	cmd := &DriveGetCmd{}
+	if err := runKong(t, cmd, []string{"file1"}, ctx, flags); err != nil {
+		t.Fatalf("get: %v", err)
+	}
 
 	outPath := filepath.Join(t.TempDir(), "download.bin")
-	_ = captureStdout(t, func() {
-		cmd := &DriveDownloadCmd{}
-		if err := runKong(t, cmd, []string{"file1", "--out", outPath}, ctx, flags); err != nil {
-			t.Fatalf("download: %v", err)
-		}
-	})
+	stdout.Reset()
+	downloadCmd := &DriveDownloadCmd{}
+	if err := runKong(t, downloadCmd, []string{"file1", "--out", outPath}, ctx, flags); err != nil {
+		t.Fatalf("download: %v", err)
+	}
 	if st, statErr := os.Stat(outPath); statErr != nil || st.Size() == 0 {
 		t.Fatalf("downloaded file missing: %v size=%d", statErr, st.Size())
 	}
@@ -110,20 +93,18 @@ func TestDriveGetDownloadUploadURL_JSON(t *testing.T) {
 	if writeErr := os.WriteFile(local, []byte("data"), 0o600); writeErr != nil {
 		t.Fatalf("write: %v", writeErr)
 	}
-	_ = captureStdout(t, func() {
-		cmd := &DriveUploadCmd{}
-		if err := runKong(t, cmd, []string{local, "--name", "Upload.txt"}, ctx, flags); err != nil {
-			t.Fatalf("upload: %v", err)
-		}
-	})
+	stdout.Reset()
+	uploadCmd := &DriveUploadCmd{}
+	if err := runKong(t, uploadCmd, []string{local, "--name", "Upload.txt"}, ctx, flags); err != nil {
+		t.Fatalf("upload: %v", err)
+	}
 
-	urlOut := captureStdout(t, func() {
-		cmd := &DriveURLCmd{}
-		if err := runKong(t, cmd, []string{"file1", "file2"}, ctx, flags); err != nil {
-			t.Fatalf("url: %v", err)
-		}
-	})
-	if !strings.Contains(urlOut, "file1") || !strings.Contains(urlOut, "drive.google.com") {
+	stdout.Reset()
+	urlCmd := &DriveURLCmd{}
+	if err := runKong(t, urlCmd, []string{"file1", "file2"}, ctx, flags); err != nil {
+		t.Fatalf("url: %v", err)
+	}
+	if urlOut := stdout.String(); !strings.Contains(urlOut, "file1") || !strings.Contains(urlOut, "drive.google.com") {
 		t.Fatalf("unexpected url output: %q", urlOut)
 	}
 }

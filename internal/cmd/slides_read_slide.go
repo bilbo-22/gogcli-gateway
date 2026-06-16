@@ -3,7 +3,6 @@ package cmd
 import (
 	"context"
 	"fmt"
-	"os"
 	"strings"
 	"text/tabwriter"
 
@@ -33,7 +32,7 @@ func (c *SlidesReadSlideCmd) Run(ctx context.Context, flags *RootFlags) error {
 		return usage("empty slideId")
 	}
 
-	slidesSvc, err := newSlidesService(ctx, account)
+	slidesSvc, err := slidesService(ctx, account)
 	if err != nil {
 		return err
 	}
@@ -59,7 +58,8 @@ func (c *SlidesReadSlideCmd) Run(ctx context.Context, flags *RootFlags) error {
 
 	// Extract speaker notes
 	var notesText string
-	if np := slide.SlideProperties.NotesPage; np != nil {
+	if slide.SlideProperties != nil && slide.SlideProperties.NotesPage != nil {
+		np := slide.SlideProperties.NotesPage
 		for _, el := range np.PageElements {
 			if el.Shape != nil && el.Shape.Text != nil {
 				if el.Shape.Placeholder != nil && el.Shape.Placeholder.Type == placeholderTypeBody {
@@ -75,7 +75,7 @@ func (c *SlidesReadSlideCmd) Run(ctx context.Context, flags *RootFlags) error {
 	notesText = strings.TrimRight(notesText, "\n")
 
 	// Extract text elements from the slide itself
-	var textElements []map[string]any
+	textElements := []map[string]any{}
 	for _, el := range slide.PageElements {
 		if el.Shape != nil && el.Shape.Text != nil {
 			var text string
@@ -95,7 +95,7 @@ func (c *SlidesReadSlideCmd) Run(ctx context.Context, flags *RootFlags) error {
 	}
 
 	// Extract image references
-	var images []map[string]any
+	images := []map[string]any{}
 	for _, el := range slide.PageElements {
 		if el.Image != nil {
 			img := map[string]any{
@@ -117,10 +117,10 @@ func (c *SlidesReadSlideCmd) Run(ctx context.Context, flags *RootFlags) error {
 			"textElements":   textElements,
 			"images":         images,
 		}
-		return outfmt.WriteJSON(ctx, os.Stdout, result)
+		return outfmt.WriteJSON(ctx, stdoutWriter(ctx), result)
 	}
 
-	u.Out().Printf("Slide %d  (%s)", slideIndex+1, slideID)
+	u.Out().Linef("Slide %d  (%s)", slideIndex+1, slideID)
 	u.Out().Println("")
 
 	if notesText != "" {
@@ -134,7 +134,7 @@ func (c *SlidesReadSlideCmd) Run(ctx context.Context, flags *RootFlags) error {
 
 	if len(textElements) > 0 {
 		u.Out().Println("Text Elements:")
-		tw := tabwriter.NewWriter(os.Stdout, 0, 4, 2, ' ', 0)
+		tw := tabwriter.NewWriter(stdoutWriter(ctx), 0, 4, 2, ' ', 0)
 		fmt.Fprintln(tw, "OBJECT ID\tTEXT")
 		for _, te := range textElements {
 			fmt.Fprintf(tw, "%s\t%s\n", te["objectId"], te["text"])
@@ -145,7 +145,7 @@ func (c *SlidesReadSlideCmd) Run(ctx context.Context, flags *RootFlags) error {
 
 	if len(images) > 0 {
 		u.Out().Println("Images:")
-		tw := tabwriter.NewWriter(os.Stdout, 0, 4, 2, ' ', 0)
+		tw := tabwriter.NewWriter(stdoutWriter(ctx), 0, 4, 2, ' ', 0)
 		fmt.Fprintln(tw, "OBJECT ID\tURL")
 		for _, img := range images {
 			url := "(none)"

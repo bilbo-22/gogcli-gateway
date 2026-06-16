@@ -37,4 +37,27 @@ func TestGmailWatchServeCmd_ValidationErrors(t *testing.T) {
 			t.Fatalf("expected error")
 		}
 	})
+
+	t.Run("fetch delay must be non-negative", func(t *testing.T) {
+		if err := runKong(t, &GmailWatchServeCmd{}, []string{"--fetch-delay", "-1", "--port", "9999"}, context.Background(), flags); err == nil {
+			t.Fatalf("expected error")
+		}
+	})
+
+	t.Run("fetch delay must parse as duration", func(t *testing.T) {
+		if err := runKong(t, &GmailWatchServeCmd{}, []string{"--fetch-delay", "not-a-duration", "--port", "9999"}, context.Background(), flags); err == nil {
+			t.Fatalf("expected error")
+		}
+	})
+
+	t.Run("dry-run validates explicit hook options", func(t *testing.T) {
+		dryRunFlags := &RootFlags{Account: "a@b.com", DryRun: true}
+		if err := runKong(t, &GmailWatchServeCmd{}, []string{
+			"--hook-url", "https://example.com/hook",
+			"--max-bytes", "0",
+			"--port", "9999",
+		}, context.Background(), dryRunFlags); err == nil {
+			t.Fatalf("expected error")
+		}
+	})
 }

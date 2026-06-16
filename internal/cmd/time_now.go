@@ -3,7 +3,6 @@ package cmd
 import (
 	"context"
 	"fmt"
-	"os"
 	"strings"
 	"time"
 
@@ -16,28 +15,26 @@ type TimeCmd struct {
 }
 
 type TimeNowCmd struct {
-	Timezone string `name:"timezone" help:"Timezone (e.g., America/New_York, UTC)"`
+	Timezone string `name:"timezone" help:"Timezone (e.g., America/New_York, UTC). Default: GOG_TIMEZONE, config, then local"`
 }
 
 func (c *TimeNowCmd) Run(ctx context.Context) error {
 	u := ui.FromContext(ctx)
-	loc := time.Local
-	tz := loc.String()
-	if strings.TrimSpace(c.Timezone) != "" {
-		var err error
-		loc, err = time.LoadLocation(strings.TrimSpace(c.Timezone))
-		if err != nil {
-			return fmt.Errorf("invalid timezone %q: %w", c.Timezone, err)
+	loc, err := resolveOutputLocation(ctx, c.Timezone, false, stderrWriter(ctx))
+	if err != nil {
+		if strings.TrimSpace(c.Timezone) != "" {
+			return usage(err.Error())
 		}
-		tz = c.Timezone
+		return err
 	}
+	tz := loc.String()
 
 	now := time.Now().In(loc)
 	formatted := now.Format("Monday, January 02, 2006 03:04 PM")
 	offset := formatUTCOffset(now)
 
 	if outfmt.IsJSON(ctx) {
-		return outfmt.WriteJSON(ctx, os.Stdout, map[string]any{
+		return outfmt.WriteJSON(ctx, stdoutWriter(ctx), map[string]any{
 			"timezone":     tz,
 			"current_time": now.Format(time.RFC3339),
 			"utc_offset":   offset,
@@ -45,10 +42,10 @@ func (c *TimeNowCmd) Run(ctx context.Context) error {
 		})
 	}
 	if u != nil {
-		u.Out().Printf("timezone\t%s", tz)
-		u.Out().Printf("current_time\t%s", now.Format(time.RFC3339))
-		u.Out().Printf("utc_offset\t%s", offset)
-		u.Out().Printf("formatted\t%s", formatted)
+		u.Out().Linef("timezone\t%s", tz)
+		u.Out().Linef("current_time\t%s", now.Format(time.RFC3339))
+		u.Out().Linef("utc_offset\t%s", offset)
+		u.Out().Linef("formatted\t%s", formatted)
 	}
 	return nil
 }

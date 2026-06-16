@@ -21,6 +21,12 @@ func TestValidateAutoDeclineMode(t *testing.T) {
 				t.Errorf("validateAutoDeclineMode(%q) error = %v, wantErr %v", tt.input, err, tt.wantErr)
 				return
 			}
+			if tt.wantErr {
+				if got := ExitCode(err); got != 2 {
+					t.Fatalf("expected usage exit code 2, got %d (err=%v)", got, err)
+				}
+				return
+			}
 			if got != tt.want {
 				t.Errorf("validateAutoDeclineMode(%q) = %q, want %q", tt.input, got, tt.want)
 			}
@@ -45,6 +51,12 @@ func TestValidateChatStatus(t *testing.T) {
 			got, err := validateChatStatus(tt.input)
 			if (err != nil) != tt.wantErr {
 				t.Errorf("validateChatStatus(%q) error = %v, wantErr %v", tt.input, err, tt.wantErr)
+				return
+			}
+			if tt.wantErr {
+				if got := ExitCode(err); got != 2 {
+					t.Fatalf("expected usage exit code 2, got %d (err=%v)", got, err)
+				}
 				return
 			}
 			if got != tt.want {

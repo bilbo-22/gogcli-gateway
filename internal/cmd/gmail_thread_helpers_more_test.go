@@ -2,7 +2,6 @@ package cmd
 
 import (
 	"context"
-	"encoding/base64"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
@@ -62,28 +61,9 @@ func TestGmailURLCmd_MissingAccount(t *testing.T) {
 	}
 }
 
-func TestGmailThreadHelpers_Misc(t *testing.T) {
+func TestCollectAttachmentsNil(t *testing.T) {
 	if collectAttachments(nil) != nil {
 		t.Fatalf("expected nil attachments")
-	}
-	if bestBodyText(nil) != "" {
-		t.Fatalf("expected empty body")
-	}
-	if body, ok := bestBodyForDisplay(nil); body != "" || ok {
-		t.Fatalf("expected empty body")
-	}
-	part := &gmail.MessagePart{
-		MimeType: "text/html",
-		Body:     &gmail.MessagePartBody{Data: base64.RawURLEncoding.EncodeToString([]byte("<b>hi</b>"))},
-	}
-	if body, ok := bestBodyForDisplay(part); body == "" || !ok {
-		t.Fatalf("expected html body")
-	}
-	if got := findPartBody(nil, "text/plain"); got != "" {
-		t.Fatalf("expected empty findPartBody")
-	}
-	if got := normalizeMimeType("text/plain; charset=\""); got != "text/plain" {
-		t.Fatalf("unexpected normalized mime: %q", got)
 	}
 }
 

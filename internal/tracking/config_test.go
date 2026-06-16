@@ -1,23 +1,20 @@
 package tracking
 
 import (
+	"encoding/json"
+	"fmt"
 	"os"
-	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 )
 
 func TestConfigRoundTrip(t *testing.T) {
-	// Use temp dir
-	tmpDir := t.TempDir()
-	t.Setenv("HOME", tmpDir)
-	t.Setenv("XDG_CONFIG_HOME", filepath.Join(tmpDir, "xdg-config"))
-	t.Setenv("GOG_KEYRING_BACKEND", "file")
-	t.Setenv("GOG_KEYRING_PASSWORD", "test-password")
+	store := setupTrackingConfigEnv(t)
 
 	account := "test@example.com"
 
-	if err := SaveSecrets(account, "testkey123", "adminkey456"); err != nil {
+	if err := store.secrets.SaveSecrets(account, "testkey123", "adminkey456"); err != nil {
 		t.Fatalf("SaveSecrets failed: %v", err)
 	}
 
@@ -30,11 +27,11 @@ func TestConfigRoundTrip(t *testing.T) {
 		SecretsInKeyring: true,
 	}
 
-	if err := SaveConfig(account, cfg); err != nil {
+	if err := store.Save(account, cfg); err != nil {
 		t.Fatalf("SaveConfig failed: %v", err)
 	}
 
-	loaded, err := LoadConfig(account)
+	loaded, err := store.Load(account)
 	if err != nil {
 		t.Fatalf("LoadConfig failed: %v", err)
 	}
@@ -63,10 +60,7 @@ func TestConfigRoundTrip(t *testing.T) {
 		t.Error("IsConfigured should return true")
 	}
 
-	path, pathErr := ConfigPath()
-	if pathErr != nil {
-		t.Fatalf("ConfigPath: %v", pathErr)
-	}
+	path := store.Path()
 
 	b, readErr := os.ReadFile(path)
 	if readErr != nil {
@@ -84,11 +78,9 @@ func TestConfigRoundTrip(t *testing.T) {
 }
 
 func TestLoadConfigMissing(t *testing.T) {
-	tmpDir := t.TempDir()
-	t.Setenv("HOME", tmpDir)
-	t.Setenv("XDG_CONFIG_HOME", filepath.Join(tmpDir, "xdg-config"))
+	store := setupTrackingConfigEnv(t)
 
-	cfg, err := LoadConfig("missing@example.com")
+	cfg, err := store.Load("missing@example.com")
 	if err != nil {
 		t.Fatalf("LoadConfig failed: %v", err)
 	}
@@ -103,21 +95,80 @@ func TestLoadConfigMissing(t *testing.T) {
 }
 
 func TestLoadConfigDifferentAccount(t *testing.T) {
-	tmpDir := t.TempDir()
-	t.Setenv("HOME", tmpDir)
-	t.Setenv("XDG_CONFIG_HOME", filepath.Join(tmpDir, "xdg-config"))
+	store := setupTrackingConfigEnv(t)
 
 	cfg := &Config{Enabled: true, WorkerURL: "https://test.workers.dev"}
-	if err := SaveConfig("a@example.com", cfg); err != nil {
+	if err := store.Save("a@example.com", cfg); err != nil {
 		t.Fatalf("SaveConfig failed: %v", err)
 	}
 
-	loaded, err := LoadConfig("b@example.com")
+	loaded, err := store.Load("b@example.com")
 	if err != nil {
 		t.Fatalf("LoadConfig failed: %v", err)
 	}
 
 	if loaded.Enabled {
 		t.Error("Expected Enabled to be false for missing account config")
+	}
+}
+
+func TestSaveConfigReturnsReadError(t *testing.T) {
+	store := setupTrackingConfigEnv(t)
+
+	path := store.Path()
+
+	if mkdirErr := os.MkdirAll(path, 0o700); mkdirErr != nil {
+		t.Fatalf("mkdir config path: %v", mkdirErr)
+	}
+
+	err := store.Save("a@example.com", &Config{Enabled: true, WorkerURL: "https://worker.example.com"})
+	if err == nil || !strings.Contains(err.Error(), "read tracking config") {
+		t.Fatalf("expected read error, got %v", err)
+	}
+}
+
+func TestSaveConfigConcurrentKeepsAccounts(t *testing.T) {
+	store := setupTrackingConfigEnv(t)
+
+	const count = 12
+	var wg sync.WaitGroup
+	errCh := make(chan error, count)
+
+	for i := range count {
+		wg.Add(1)
+
+		go func(i int) {
+			defer wg.Done()
+
+			errCh <- store.Save(
+				fmt.Sprintf("user%d@example.com", i),
+				&Config{Enabled: true, WorkerURL: "https://worker.example.com"},
+			)
+		}(i)
+	}
+
+	wg.Wait()
+	close(errCh)
+
+	for err := range errCh {
+		if err != nil {
+			t.Fatalf("SaveConfig: %v", err)
+		}
+	}
+
+	path := store.Path()
+
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("ReadFile: %v", err)
+	}
+
+	var fileCfg fileConfig
+	if err := json.Unmarshal(data, &fileCfg); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+
+	if len(fileCfg.Accounts) != count {
+		t.Fatalf("accounts=%d want %d: %#v", len(fileCfg.Accounts), count, fileCfg.Accounts)
 	}
 }

@@ -1,24 +1,15 @@
 package cmd
 
 import (
-	"context"
 	"encoding/json"
 	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
-
-	"google.golang.org/api/option"
-	"google.golang.org/api/tasks/v1"
-
-	"github.com/steipete/gogcli/internal/ui"
 )
 
 func TestTasks_TextPaths(t *testing.T) {
-	origNew := newTasksService
-	t.Cleanup(func() { newTasksService = origNew })
-
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch {
 		case r.URL.Path == "/tasks/v1/users/@me/lists" && r.Method == http.MethodGet:
@@ -72,22 +63,11 @@ func TestTasks_TextPaths(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	svc, err := tasks.NewService(context.Background(),
-		option.WithoutAuthentication(),
-		option.WithHTTPClient(srv.Client()),
-		option.WithEndpoint(srv.URL+"/"),
-	)
-	if err != nil {
-		t.Fatalf("NewService: %v", err)
-	}
-	newTasksService = func(context.Context, string) (*tasks.Service, error) { return svc, nil }
-
 	flags := &RootFlags{Account: "a@b.com", Force: true}
-	u, uiErr := ui.New(ui.Options{Stdout: io.Discard, Stderr: io.Discard, Color: "never"})
-	if uiErr != nil {
-		t.Fatalf("ui.New: %v", uiErr)
-	}
-	ctx := ui.WithUI(context.Background(), u)
+	ctx := withTasksTestService(
+		newCmdRuntimeOutputContext(t, io.Discard, io.Discard),
+		newTasksServiceFromServer(t, srv),
+	)
 
 	if err := runKong(t, &TasksListsListCmd{}, []string{}, ctx, flags); err != nil {
 		t.Fatalf("lists: %v", err)
@@ -140,9 +120,6 @@ func TestTasks_TextPaths(t *testing.T) {
 }
 
 func TestTasksLists_NoItems(t *testing.T) {
-	origNew := newTasksService
-	t.Cleanup(func() { newTasksService = origNew })
-
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch {
 		case r.URL.Path == "/tasks/v1/users/@me/lists" && r.Method == http.MethodGet:
@@ -160,22 +137,11 @@ func TestTasksLists_NoItems(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	svc, err := tasks.NewService(context.Background(),
-		option.WithoutAuthentication(),
-		option.WithHTTPClient(srv.Client()),
-		option.WithEndpoint(srv.URL+"/"),
-	)
-	if err != nil {
-		t.Fatalf("NewService: %v", err)
-	}
-	newTasksService = func(context.Context, string) (*tasks.Service, error) { return svc, nil }
-
 	flags := &RootFlags{Account: "a@b.com"}
-	u, uiErr := ui.New(ui.Options{Stdout: io.Discard, Stderr: io.Discard, Color: "never"})
-	if uiErr != nil {
-		t.Fatalf("ui.New: %v", uiErr)
-	}
-	ctx := ui.WithUI(context.Background(), u)
+	ctx := withTasksTestService(
+		newCmdRuntimeOutputContext(t, io.Discard, io.Discard),
+		newTasksServiceFromServer(t, srv),
+	)
 
 	if err := runKong(t, &TasksListsListCmd{}, []string{}, ctx, flags); err != nil {
 		t.Fatalf("lists: %v", err)

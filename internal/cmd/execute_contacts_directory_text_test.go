@@ -13,9 +13,6 @@ import (
 )
 
 func TestExecute_ContactsDirectoryList_Text(t *testing.T) {
-	origDir := newPeopleDirectoryService
-	t.Cleanup(func() { newPeopleDirectoryService = origDir })
-
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if !strings.Contains(r.URL.Path, "people:listDirectoryPeople") {
 			http.NotFound(w, r)
@@ -45,18 +42,15 @@ func TestExecute_ContactsDirectoryList_Text(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewService: %v", err)
 	}
-	newPeopleDirectoryService = func(context.Context, string) (*people.Service, error) { return svc, nil }
 
-	out := captureStdout(t, func() {
-		errOut := captureStderr(t, func() {
-			if err := Execute([]string{"--account", "a@b.com", "contacts", "directory", "list", "--max", "1"}); err != nil {
-				t.Fatalf("Execute: %v", err)
-			}
-		})
-		if !strings.Contains(errOut, "# Next page: --page npt") {
-			t.Fatalf("unexpected stderr=%q", errOut)
-		}
-	})
+	result := executeWithPeopleDirectoryTestService(t, []string{"--account", "a@b.com", "contacts", "directory", "list", "--max", "1"}, svc)
+	if result.err != nil {
+		t.Fatalf("Execute: %v", result.err)
+	}
+	if !strings.Contains(result.stderr, "# More results: use --all/--all-pages to fetch every page, or --page npt for the next page") {
+		t.Fatalf("unexpected stderr=%q", result.stderr)
+	}
+	out := result.stdout
 	if !strings.Contains(out, "RESOURCE") || !strings.Contains(out, "people/d1") || !strings.Contains(out, "dir@example.com") {
 		t.Fatalf("unexpected out=%q", out)
 	}

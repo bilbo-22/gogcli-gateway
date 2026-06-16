@@ -26,6 +26,11 @@ type SlidesAddSlideCmd struct {
 func (c *SlidesAddSlideCmd) Run(ctx context.Context, flags *RootFlags) error {
 	u := ui.FromContext(ctx)
 
+	presentationID := strings.TrimSpace(c.PresentationID)
+	if presentationID == "" {
+		return usage("empty presentationId")
+	}
+
 	// Resolve notes: --notes-file takes precedence over --notes
 	var notes string
 	if c.NotesFile != "" {
@@ -36,16 +41,6 @@ func (c *SlidesAddSlideCmd) Run(ctx context.Context, flags *RootFlags) error {
 		notes = string(data)
 	} else {
 		notes = c.Notes
-	}
-
-	account, err := requireAccount(flags)
-	if err != nil {
-		return err
-	}
-
-	presentationID := strings.TrimSpace(c.PresentationID)
-	if presentationID == "" {
-		return usage("empty presentationId")
 	}
 
 	// Validate image format
@@ -59,14 +54,29 @@ func (c *SlidesAddSlideCmd) Run(ctx context.Context, flags *RootFlags) error {
 	case imageExtGIF:
 		mimeType = imageMimeGIF
 	default:
-		return fmt.Errorf("unsupported image format %q (use PNG, JPG, or GIF)", ext)
+		return usagef("unsupported image format %q (use PNG, JPG, or GIF)", ext)
 	}
 
-	slidesSvc, err := newSlidesService(ctx, account)
+	if err := dryRunExit(ctx, flags, "slides.add-slide", map[string]any{
+		"presentation_id": presentationID,
+		"image":           c.Image,
+		"mime_type":       mimeType,
+		"notes":           notes != "",
+		"before":          strings.TrimSpace(c.Before),
+	}); err != nil {
+		return err
+	}
+
+	account, err := requireAccount(flags)
 	if err != nil {
 		return err
 	}
-	driveSvc, err := newDriveService(ctx, account)
+
+	slidesSvc, err := slidesService(ctx, account)
+	if err != nil {
+		return err
+	}
+	driveSvc, err := driveService(ctx, account)
 	if err != nil {
 		return err
 	}
@@ -100,18 +110,7 @@ func (c *SlidesAddSlideCmd) Run(ctx context.Context, flags *RootFlags) error {
 		return fmt.Errorf("set image permissions: %w", err)
 	}
 
-	// Obtain a public download URL
-	imageURL := driveFile.WebContentLink
-	if imageURL == "" {
-		got, getErr := driveSvc.Files.Get(driveFile.Id).Fields("webContentLink").Context(ctx).Do()
-		if getErr != nil {
-			return fmt.Errorf("get image URL: %w", getErr)
-		}
-		imageURL = got.WebContentLink
-	}
-	if imageURL == "" {
-		return fmt.Errorf("could not obtain public URL for uploaded image")
-	}
+	imageURL := driveImageDownloadURL(driveFile.Id)
 
 	// Get presentation to read page size and current slide count
 	pres, err := slidesSvc.Presentations.Get(presentationID).Context(ctx).Do()
@@ -155,7 +154,7 @@ func (c *SlidesAddSlideCmd) Run(ctx context.Context, flags *RootFlags) error {
 	}
 
 	// Create the slide with a full-bleed image in one batch
-	_, err = slidesSvc.Presentations.BatchUpdate(presentationID, &slides.BatchUpdatePresentationRequest{
+	err = batchUpdateSlidesImageRequests(ctx, slidesSvc, presentationID, &slides.BatchUpdatePresentationRequest{
 		Requests: []*slides.Request{
 			{
 				CreateSlide: createSlideReq,
@@ -178,7 +177,7 @@ func (c *SlidesAddSlideCmd) Run(ctx context.Context, flags *RootFlags) error {
 				},
 			},
 		},
-	}).Context(ctx).Do()
+	})
 	if err != nil {
 		return fmt.Errorf("create slide: %w", err)
 	}
@@ -241,7 +240,7 @@ func (c *SlidesAddSlideCmd) Run(ctx context.Context, flags *RootFlags) error {
 	link := fmt.Sprintf("https://docs.google.com/presentation/d/%s/edit", presentationID)
 
 	if outfmt.IsJSON(ctx) {
-		return outfmt.WriteJSON(ctx, os.Stdout, map[string]any{
+		return outfmt.WriteJSON(ctx, stdoutWriter(ctx), map[string]any{
 			"slideNumber":    slideNum,
 			"slideObjectId":  slideID,
 			"presentationId": presentationID,
@@ -249,7 +248,7 @@ func (c *SlidesAddSlideCmd) Run(ctx context.Context, flags *RootFlags) error {
 		})
 	}
 
-	u.Out().Printf("slide\t%d", slideNum)
-	u.Out().Printf("link\t%s", link)
+	u.Out().Linef("slide\t%d", slideNum)
+	u.Out().Linef("link\t%s", link)
 	return nil
 }

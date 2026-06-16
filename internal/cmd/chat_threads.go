@@ -2,8 +2,6 @@ package cmd
 
 import (
 	"context"
-	"fmt"
-	"os"
 	"strings"
 
 	"google.golang.org/api/chat/v1"
@@ -26,6 +24,13 @@ type ChatThreadsListCmd struct {
 
 func (c *ChatThreadsListCmd) Run(ctx context.Context, flags *RootFlags) error {
 	u := ui.FromContext(ctx)
+	space, err := normalizeSpace(c.Space)
+	if err != nil {
+		return usage("required: space")
+	}
+	if c.Max <= 0 {
+		return usage("max must be > 0")
+	}
 	account, err := requireAccount(flags)
 	if err != nil {
 		return err
@@ -34,12 +39,7 @@ func (c *ChatThreadsListCmd) Run(ctx context.Context, flags *RootFlags) error {
 		return err
 	}
 
-	space, err := normalizeSpace(c.Space)
-	if err != nil {
-		return usage("required: space")
-	}
-
-	svc, err := newChatService(ctx, account)
+	svc, err := chatService(ctx, account)
 	if err != nil {
 		return err
 	}
@@ -52,27 +52,16 @@ func (c *ChatThreadsListCmd) Run(ctx context.Context, flags *RootFlags) error {
 		if strings.TrimSpace(pageToken) != "" {
 			call = call.PageToken(pageToken)
 		}
-		resp, err := call.Do()
-		if err != nil {
-			return nil, "", err
+		resp, callErr := call.Do()
+		if callErr != nil {
+			return nil, "", callErr
 		}
 		return resp.Messages, resp.NextPageToken, nil
 	}
 
-	var messages []*chat.Message
-	nextPageToken := ""
-	if c.All {
-		all, err := collectAllPages(c.Page, fetch)
-		if err != nil {
-			return err
-		}
-		messages = all
-	} else {
-		var err error
-		messages, nextPageToken, err = fetch(c.Page)
-		if err != nil {
-			return err
-		}
+	messages, nextPageToken, err := loadPagedItems(c.Page, c.All, fetch)
+	if err != nil {
+		return err
 	}
 
 	threads := make([]*chatMessageThreadItem, 0, len(messages))
@@ -106,7 +95,7 @@ func (c *ChatThreadsListCmd) Run(ctx context.Context, flags *RootFlags) error {
 				"createTime": item.message.CreateTime,
 			})
 		}
-		if err := outfmt.WriteJSON(ctx, os.Stdout, map[string]any{
+		if err := outfmt.WriteJSON(ctx, stdoutWriter(ctx), map[string]any{
 			"threads":       items,
 			"nextPageToken": nextPageToken,
 		}); err != nil {
@@ -123,22 +112,15 @@ func (c *ChatThreadsListCmd) Run(ctx context.Context, flags *RootFlags) error {
 		return failEmptyExit(c.FailEmpty)
 	}
 
-	w, flush := tableWriter(ctx)
-	defer flush()
-	fmt.Fprintln(w, "THREAD\tMESSAGE\tSENDER\tTIME\tTEXT")
-	for _, item := range threads {
-		if item == nil || item.message == nil {
-			continue
-		}
-		fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\n",
-			item.thread,
-			item.message.Name,
-			sanitizeTab(chatMessageSender(item.message)),
-			sanitizeTab(item.message.CreateTime),
-			sanitizeChatText(chatMessageText(item.message)),
-		)
+	if err := outfmt.WriteTable(
+		ctx,
+		stdoutWriter(ctx),
+		compactChatThreadRows(threads),
+		chatThreadColumns(),
+	); err != nil {
+		return err
 	}
-	printNextPageHint(u, nextPageToken)
+	printNextPageHintWithAll(u, nextPageToken, "--all/--all-pages")
 	return nil
 }
 

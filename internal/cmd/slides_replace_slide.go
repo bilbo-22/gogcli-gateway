@@ -25,22 +25,7 @@ type SlidesReplaceSlideCmd struct {
 func (c *SlidesReplaceSlideCmd) Run(ctx context.Context, flags *RootFlags) error {
 	u := ui.FromContext(ctx)
 
-	// Resolve notes: --notes-file takes precedence over --notes.
-	var notes string
-	updateNotes := false
-	if c.NotesFile != "" {
-		data, err := os.ReadFile(c.NotesFile)
-		if err != nil {
-			return fmt.Errorf("read notes file: %w", err)
-		}
-		notes = string(data)
-		updateNotes = true
-	} else if c.Notes != nil {
-		notes = *c.Notes
-		updateNotes = true
-	}
-
-	account, err := requireAccount(flags)
+	notes, updateNotes, err := resolveSlidesNotesInput(c.Notes, c.NotesFile)
 	if err != nil {
 		return err
 	}
@@ -65,14 +50,30 @@ func (c *SlidesReplaceSlideCmd) Run(ctx context.Context, flags *RootFlags) error
 	case imageExtGIF:
 		mimeType = imageMimeGIF
 	default:
-		return fmt.Errorf("unsupported image format %q (use PNG, JPG, or GIF)", ext)
+		return usagef("unsupported image format %q (use PNG, JPG, or GIF)", ext)
 	}
 
-	slidesSvc, err := newSlidesService(ctx, account)
+	if dryRunErr := dryRunExit(ctx, flags, "slides.replace-slide", map[string]any{
+		"presentation_id": presentationID,
+		"slide_id":        slideID,
+		"image":           c.Image,
+		"mime_type":       mimeType,
+		"update_notes":    updateNotes,
+		"notes":           updateNotes && notes != "",
+	}); dryRunErr != nil {
+		return dryRunErr
+	}
+
+	account, err := requireAccount(flags)
 	if err != nil {
 		return err
 	}
-	driveSvc, err := newDriveService(ctx, account)
+
+	slidesSvc, err := slidesService(ctx, account)
+	if err != nil {
+		return err
+	}
+	driveSvc, err := driveService(ctx, account)
 	if err != nil {
 		return err
 	}
@@ -83,19 +84,14 @@ func (c *SlidesReplaceSlideCmd) Run(ctx context.Context, flags *RootFlags) error
 		return fmt.Errorf("get presentation: %w", err)
 	}
 
-	slideIndex := -1
 	var imageObjectID string
-	for i, s := range pres.Slides {
-		if s.ObjectId == slideID {
-			slideIndex = i
-			// Find the first image element on the slide.
-			for _, el := range s.PageElements {
-				if el.Image != nil {
-					imageObjectID = el.ObjectId
-					break
-				}
+	slide, slideIndex := findSlidesPageByID(pres, slideID)
+	if slide != nil {
+		for _, el := range slide.PageElements {
+			if el != nil && el.Image != nil {
+				imageObjectID = el.ObjectId
+				break
 			}
-			break
 		}
 	}
 	if slideIndex == -1 {
@@ -134,18 +130,7 @@ func (c *SlidesReplaceSlideCmd) Run(ctx context.Context, flags *RootFlags) error
 		return fmt.Errorf("set image permissions: %w", err)
 	}
 
-	// Obtain a public download URL.
-	imageURL := driveFile.WebContentLink
-	if imageURL == "" {
-		got, getErr := driveSvc.Files.Get(driveFile.Id).Fields("webContentLink").Context(ctx).Do()
-		if getErr != nil {
-			return fmt.Errorf("get image URL: %w", getErr)
-		}
-		imageURL = got.WebContentLink
-	}
-	if imageURL == "" {
-		return fmt.Errorf("could not obtain public URL for uploaded image")
-	}
+	imageURL := driveImageDownloadURL(driveFile.Id)
 
 	// Replace the image in-place.
 	requests := []*slides.Request{
@@ -160,47 +145,17 @@ func (c *SlidesReplaceSlideCmd) Run(ctx context.Context, flags *RootFlags) error
 
 	// Optionally update notes in the same batch.
 	if updateNotes {
-		var notesObjectID string
-		slide := pres.Slides[slideIndex]
-		if np := slide.SlideProperties.NotesPage; np != nil {
-			if np.NotesProperties != nil {
-				notesObjectID = np.NotesProperties.SpeakerNotesObjectId
-			}
-			if notesObjectID == "" {
-				for _, el := range np.PageElements {
-					if el.Shape != nil && el.Shape.Placeholder != nil &&
-						el.Shape.Placeholder.Type == placeholderTypeBody {
-						notesObjectID = el.ObjectId
-						break
-					}
-				}
-			}
-		}
+		notesObjectID := findSpeakerNotesObjectID(slide)
 		if notesObjectID == "" {
 			return fmt.Errorf("could not find speaker notes placeholder on slide %s", slideID)
 		}
-
-		requests = append(requests, &slides.Request{
-			DeleteText: &slides.DeleteTextRequest{
-				ObjectId: notesObjectID,
-				TextRange: &slides.Range{
-					Type: "ALL",
-				},
-			},
-		})
-		if notes != "" {
-			requests = append(requests, &slides.Request{
-				InsertText: &slides.InsertTextRequest{
-					ObjectId: notesObjectID,
-					Text:     notes,
-				},
-			})
-		}
+		notesPage := slide.SlideProperties.NotesPage
+		requests = append(requests, buildSlidesReplaceTextRequests(notesObjectID, notes, slidesPageElementHasText(notesPage, notesObjectID))...)
 	}
 
-	_, err = slidesSvc.Presentations.BatchUpdate(presentationID, &slides.BatchUpdatePresentationRequest{
+	err = batchUpdateSlidesImageRequests(ctx, slidesSvc, presentationID, &slides.BatchUpdatePresentationRequest{
 		Requests: requests,
-	}).Context(ctx).Do()
+	})
 	if err != nil {
 		return fmt.Errorf("replace slide image: %w", err)
 	}
@@ -208,7 +163,7 @@ func (c *SlidesReplaceSlideCmd) Run(ctx context.Context, flags *RootFlags) error
 	link := fmt.Sprintf("https://docs.google.com/presentation/d/%s/edit", presentationID)
 
 	if outfmt.IsJSON(ctx) {
-		return outfmt.WriteJSON(ctx, os.Stdout, map[string]any{
+		return outfmt.WriteJSON(ctx, stdoutWriter(ctx), map[string]any{
 			"slideNumber":    slideIndex + 1,
 			"slideObjectId":  slideID,
 			"presentationId": presentationID,
@@ -216,10 +171,10 @@ func (c *SlidesReplaceSlideCmd) Run(ctx context.Context, flags *RootFlags) error
 		})
 	}
 
-	u.Out().Printf("Replaced image on slide %d (%s)", slideIndex+1, slideID)
+	u.Out().Linef("Replaced image on slide %d (%s)", slideIndex+1, slideID)
 	if updateNotes {
-		u.Out().Printf("Updated speaker notes")
+		u.Out().Linef("Updated speaker notes")
 	}
-	u.Out().Printf("link\t%s", link)
+	u.Out().Linef("link\t%s", link)
 	return nil
 }

@@ -2,8 +2,6 @@ package cmd
 
 import (
 	"context"
-	"fmt"
-	"os"
 	"strings"
 
 	"google.golang.org/api/chat/v1"
@@ -27,6 +25,9 @@ type ChatSpacesListCmd struct {
 
 func (c *ChatSpacesListCmd) Run(ctx context.Context, flags *RootFlags) error {
 	u := ui.FromContext(ctx)
+	if c.Max <= 0 {
+		return usage("max must be > 0")
+	}
 	account, err := requireAccount(flags)
 	if err != nil {
 		return err
@@ -35,7 +36,7 @@ func (c *ChatSpacesListCmd) Run(ctx context.Context, flags *RootFlags) error {
 		return err
 	}
 
-	svc, err := newChatService(ctx, account)
+	svc, err := chatService(ctx, account)
 	if err != nil {
 		return err
 	}
@@ -52,20 +53,9 @@ func (c *ChatSpacesListCmd) Run(ctx context.Context, flags *RootFlags) error {
 		return resp.Spaces, resp.NextPageToken, nil
 	}
 
-	var spaces []*chat.Space
-	nextPageToken := ""
-	if c.All {
-		all, err := collectAllPages(c.Page, fetch)
-		if err != nil {
-			return err
-		}
-		spaces = all
-	} else {
-		var err error
-		spaces, nextPageToken, err = fetch(c.Page)
-		if err != nil {
-			return err
-		}
+	spaces, nextPageToken, err := loadPagedItems(c.Page, c.All, fetch)
+	if err != nil {
+		return err
 	}
 
 	if outfmt.IsJSON(ctx) {
@@ -89,7 +79,7 @@ func (c *ChatSpacesListCmd) Run(ctx context.Context, flags *RootFlags) error {
 				ThreadState: space.SpaceThreadingState,
 			})
 		}
-		if err := outfmt.WriteJSON(ctx, os.Stdout, map[string]any{
+		if err := outfmt.WriteJSON(ctx, stdoutWriter(ctx), map[string]any{
 			"spaces":        items,
 			"nextPageToken": nextPageToken,
 		}); err != nil {
@@ -106,30 +96,34 @@ func (c *ChatSpacesListCmd) Run(ctx context.Context, flags *RootFlags) error {
 		return failEmptyExit(c.FailEmpty)
 	}
 
-	w, flush := tableWriter(ctx)
-	defer flush()
-	fmt.Fprintln(w, "RESOURCE\tNAME\tTYPE")
-	for _, space := range spaces {
-		if space == nil {
-			continue
-		}
-		fmt.Fprintf(w, "%s\t%s\t%s\n",
-			space.Name,
-			sanitizeTab(space.DisplayName),
-			sanitizeTab(chatSpaceType(space)),
-		)
+	if err := outfmt.WriteTable(
+		ctx,
+		stdoutWriter(ctx),
+		compactChatRows(spaces),
+		chatSpaceColumns(),
+	); err != nil {
+		return err
 	}
-	printNextPageHint(u, nextPageToken)
+	printNextPageHintWithAll(u, nextPageToken, "--all/--all-pages")
 	return nil
 }
 
 type ChatSpacesFindCmd struct {
-	DisplayName string `arg:"" name:"displayName" help:"Space display name"`
+	DisplayName string `arg:"" name:"displayName" help:"Space display name (substring match, case-insensitive)"`
 	Max         int64  `name:"max" aliases:"limit" help:"Max results per page" default:"100"`
+	Exact       bool   `name:"exact" help:"Require an exact, case-insensitive match on displayName instead of substring match"`
 }
 
 func (c *ChatSpacesFindCmd) Run(ctx context.Context, flags *RootFlags) error {
 	u := ui.FromContext(ctx)
+	displayName := strings.TrimSpace(c.DisplayName)
+	if displayName == "" {
+		return usage("required: displayName")
+	}
+	if c.Max <= 0 {
+		return usage("max must be > 0")
+	}
+
 	account, err := requireAccount(flags)
 	if err != nil {
 		return err
@@ -138,12 +132,7 @@ func (c *ChatSpacesFindCmd) Run(ctx context.Context, flags *RootFlags) error {
 		return err
 	}
 
-	displayName := strings.TrimSpace(c.DisplayName)
-	if displayName == "" {
-		return usage("required: displayName")
-	}
-
-	svc, err := newChatService(ctx, account)
+	svc, err := chatService(ctx, account)
 	if err != nil {
 		return err
 	}
@@ -162,7 +151,7 @@ func (c *ChatSpacesFindCmd) Run(ctx context.Context, flags *RootFlags) error {
 			if space == nil {
 				continue
 			}
-			if strings.EqualFold(space.DisplayName, displayName) {
+			if chatSpaceDisplayNameMatches(space.DisplayName, displayName, c.Exact) {
 				matches = append(matches, space)
 			}
 		}
@@ -193,7 +182,7 @@ func (c *ChatSpacesFindCmd) Run(ctx context.Context, flags *RootFlags) error {
 				SpaceURI:  space.SpaceUri,
 			})
 		}
-		return outfmt.WriteJSON(ctx, os.Stdout, map[string]any{"spaces": items})
+		return outfmt.WriteJSON(ctx, stdoutWriter(ctx), map[string]any{"spaces": items})
 	}
 
 	if len(matches) == 0 {
@@ -201,20 +190,14 @@ func (c *ChatSpacesFindCmd) Run(ctx context.Context, flags *RootFlags) error {
 		return nil
 	}
 
-	w, flush := tableWriter(ctx)
-	defer flush()
-	fmt.Fprintln(w, "RESOURCE\tNAME\tTYPE")
-	for _, space := range matches {
-		if space == nil {
-			continue
-		}
-		fmt.Fprintf(w, "%s\t%s\t%s\n",
-			space.Name,
-			sanitizeTab(space.DisplayName),
-			sanitizeTab(chatSpaceType(space)),
-		)
+	return outfmt.WriteTable(ctx, stdoutWriter(ctx), compactChatRows(matches), chatSpaceColumns())
+}
+
+func chatSpaceDisplayNameMatches(displayName, query string, exact bool) bool {
+	if exact {
+		return strings.EqualFold(displayName, query)
 	}
-	return nil
+	return strings.Contains(strings.ToLower(displayName), strings.ToLower(query))
 }
 
 type ChatSpacesCreateCmd struct {
@@ -224,34 +207,16 @@ type ChatSpacesCreateCmd struct {
 
 func (c *ChatSpacesCreateCmd) Run(ctx context.Context, flags *RootFlags) error {
 	u := ui.FromContext(ctx)
-	displayName := strings.TrimSpace(c.DisplayName)
-	if displayName == "" {
-		return usage("required: displayName")
-	}
-
-	members := parseCommaArgs(c.Members)
-	memberUsers := make([]string, 0, len(members))
-	memberships := make([]*chat.Membership, 0, len(members))
-	for _, member := range members {
-		user := normalizeUser(member)
-		if user == "" {
-			continue
-		}
-		memberUsers = append(memberUsers, user)
-		memberships = append(memberships, &chat.Membership{
-			Member: &chat.User{
-				Name: user,
-				Type: "HUMAN",
-			},
-		})
-	}
-
-	if err := dryRunExit(ctx, flags, "chat.spaces.create", map[string]any{
-		"display_name": displayName,
-		"members":      members,
-		"member_users": memberUsers,
-	}); err != nil {
+	plan, err := newChatSpaceCreatePlan(chatSpaceCreateInput{
+		DisplayName: c.DisplayName,
+		Members:     c.Members,
+	})
+	if err != nil {
 		return err
+	}
+
+	if dryRunErr := dryRunExit(ctx, flags, "chat.spaces.create", plan.dryRunPayload()); dryRunErr != nil {
+		return dryRunErr
 	}
 
 	account, err := requireAccount(flags)
@@ -262,38 +227,29 @@ func (c *ChatSpacesCreateCmd) Run(ctx context.Context, flags *RootFlags) error {
 		return err
 	}
 
-	svc, err := newChatService(ctx, account)
+	svc, err := chatService(ctx, account)
 	if err != nil {
 		return err
 	}
 
-	req := &chat.SetUpSpaceRequest{
-		Space: &chat.Space{
-			SpaceType:   "SPACE",
-			DisplayName: displayName,
-		},
-	}
-	if len(memberships) > 0 {
-		req.Memberships = memberships
-	}
-	resp, err := svc.Spaces.Setup(req).Do()
+	resp, err := svc.Spaces.Setup(plan.Request).Do()
 	if err != nil {
 		return err
 	}
 
 	if outfmt.IsJSON(ctx) {
-		return outfmt.WriteJSON(ctx, os.Stdout, map[string]any{"space": resp})
+		return outfmt.WriteJSON(ctx, stdoutWriter(ctx), map[string]any{"space": resp})
 	}
 
 	if resp == nil {
-		u.Out().Printf("space\t%s", displayName)
+		u.Out().Linef("space\t%s", plan.DisplayName)
 		return nil
 	}
 	if resp.Name != "" {
-		u.Out().Printf("resource\t%s", resp.Name)
+		u.Out().Linef("resource\t%s", resp.Name)
 	}
 	if resp.DisplayName != "" {
-		u.Out().Printf("name\t%s", resp.DisplayName)
+		u.Out().Linef("name\t%s", resp.DisplayName)
 	}
 	return nil
 }

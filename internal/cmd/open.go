@@ -3,7 +3,6 @@ package cmd
 import (
 	"context"
 	"fmt"
-	"os"
 	"strings"
 
 	"github.com/steipete/gogcli/internal/outfmt"
@@ -11,7 +10,7 @@ import (
 
 type OpenCmd struct {
 	Target string `arg:"" name:"target" help:"Google URL or ID"`
-	Type   string `name:"type" help:"Type hint (auto|drive|folder|docs|sheets|slides|gmail-thread)" default:"auto" enum:"auto,drive,folder,docs,sheets,slides,gmail-thread"`
+	Type   string `name:"type" help:"Type hint (auto|drive|folder|docs|sheets|slides|sites|gmail-thread)" default:"auto" enum:"auto,drive,folder,docs,sheets,slides,sites,gmail-thread"`
 }
 
 func (c *OpenCmd) Run(ctx context.Context) error {
@@ -34,7 +33,7 @@ func (c *OpenCmd) Run(ctx context.Context) error {
 	}
 
 	if outfmt.IsJSON(ctx) {
-		return outfmt.WriteJSON(ctx, os.Stdout, map[string]any{
+		return outfmt.WriteJSON(ctx, stdoutWriter(ctx), map[string]any{
 			"input": target,
 			"type":  kind,
 			"url":   url,
@@ -42,12 +41,12 @@ func (c *OpenCmd) Run(ctx context.Context) error {
 	}
 
 	if outfmt.IsPlain(ctx) {
-		_, _ = fmt.Fprintf(os.Stdout, "type\t%s\n", kind)
-		_, _ = fmt.Fprintf(os.Stdout, "url\t%s\n", url)
+		_, _ = fmt.Fprintf(stdoutWriter(ctx), "type\t%s\n", kind)
+		_, _ = fmt.Fprintf(stdoutWriter(ctx), "url\t%s\n", url)
 		return nil
 	}
 
-	_, _ = fmt.Fprintln(os.Stdout, url)
+	_, _ = fmt.Fprintln(stdoutWriter(ctx), url)
 	return nil
 }
 
@@ -58,7 +57,7 @@ func bestEffortWebURL(kind string, input string) string {
 		return ""
 	}
 
-	id := normalizeGoogleID(input)
+	id := openGoogleID(input)
 
 	switch kind {
 	case "drive", colorAuto:
@@ -91,7 +90,15 @@ func bestEffortWebURL(kind string, input string) string {
 				if strings.Contains(u.Path, "/presentation/") {
 					return fmt.Sprintf("https://docs.google.com/presentation/d/%s/edit", id)
 				}
+				if strings.Contains(u.Path, "/site/") {
+					return fmt.Sprintf("https://sites.google.com/d/%s/edit", id)
+				}
 				return fmt.Sprintf("https://drive.google.com/open?id=%s", id)
+			case "sites.google.com":
+				if id == "" {
+					return input
+				}
+				return fmt.Sprintf("https://sites.google.com/d/%s/edit", id)
 			case "mail.google.com", "gmail.google.com":
 				th := normalizeGmailThreadID(input)
 				if th != "" && th != input {
@@ -127,8 +134,13 @@ func bestEffortWebURL(kind string, input string) string {
 			return fmt.Sprintf("https://docs.google.com/presentation/d/%s/edit", id)
 		}
 		return ""
+	case "sites":
+		if id != "" {
+			return fmt.Sprintf("https://sites.google.com/d/%s/edit", id)
+		}
+		return ""
 	case "gmail-thread":
-		th := normalizeGmailThreadID(input)
+		th := openGmailThreadID(input)
 		if strings.TrimSpace(th) == "" {
 			return ""
 		}
@@ -136,4 +148,34 @@ func bestEffortWebURL(kind string, input string) string {
 	default:
 		return ""
 	}
+}
+
+func openGoogleID(input string) string {
+	trimmed := strings.TrimSpace(input)
+	id := normalizeGoogleID(trimmed)
+	if id == "" {
+		return ""
+	}
+	if parseMaybeURL(trimmed) != nil && id == trimmed {
+		return ""
+	}
+	if strings.ContainsAny(id, "/?#") {
+		return ""
+	}
+	return id
+}
+
+func openGmailThreadID(input string) string {
+	trimmed := strings.TrimSpace(input)
+	id := normalizeGmailThreadID(trimmed)
+	if id == "" {
+		return ""
+	}
+	if parseMaybeURL(trimmed) != nil && id == trimmed {
+		return ""
+	}
+	if strings.ContainsAny(id, "/?#") {
+		return ""
+	}
+	return id
 }

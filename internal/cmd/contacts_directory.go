@@ -2,8 +2,6 @@ package cmd
 
 import (
 	"context"
-	"fmt"
-	"os"
 	"strings"
 	"time"
 
@@ -32,12 +30,15 @@ type ContactsDirectoryListCmd struct {
 
 func (c *ContactsDirectoryListCmd) Run(ctx context.Context, flags *RootFlags) error {
 	u := ui.FromContext(ctx)
+	if c.Max <= 0 {
+		return usage("max must be > 0")
+	}
 	account, err := requireAccount(flags)
 	if err != nil {
 		return err
 	}
 
-	svc, err := newPeopleDirectoryService(ctx, account)
+	svc, err := peopleDirectoryService(ctx, account)
 	if err != nil {
 		return err
 	}
@@ -55,27 +56,16 @@ func (c *ContactsDirectoryListCmd) Run(ctx context.Context, flags *RootFlags) er
 			call = call.PageToken(pageToken)
 		}
 
-		resp, err := call.Do()
-		if err != nil {
-			return nil, "", err
+		resp, callErr := call.Do()
+		if callErr != nil {
+			return nil, "", callErr
 		}
 		return resp.People, resp.NextPageToken, nil
 	}
 
-	var peopleList []*people.Person
-	nextPageToken := ""
-	if c.All {
-		all, err := collectAllPages(c.Page, fetch)
-		if err != nil {
-			return err
-		}
-		peopleList = all
-	} else {
-		var err error
-		peopleList, nextPageToken, err = fetch(c.Page)
-		if err != nil {
-			return err
-		}
+	peopleList, nextPageToken, err := loadPagedItems(c.Page, c.All, fetch)
+	if err != nil {
+		return err
 	}
 	if outfmt.IsJSON(ctx) {
 		type item struct {
@@ -94,7 +84,7 @@ func (c *ContactsDirectoryListCmd) Run(ctx context.Context, flags *RootFlags) er
 				Email:    primaryEmail(p),
 			})
 		}
-		if err := outfmt.WriteJSON(ctx, os.Stdout, map[string]any{
+		if err := outfmt.WriteJSON(ctx, stdoutWriter(ctx), map[string]any{
 			"people":        items,
 			"nextPageToken": nextPageToken,
 		}); err != nil {
@@ -111,20 +101,15 @@ func (c *ContactsDirectoryListCmd) Run(ctx context.Context, flags *RootFlags) er
 		return failEmptyExit(c.FailEmpty)
 	}
 
-	w, flush := tableWriter(ctx)
-	defer flush()
-	fmt.Fprintln(w, "RESOURCE\tNAME\tEMAIL")
-	for _, p := range peopleList {
-		if p == nil {
-			continue
-		}
-		fmt.Fprintf(w, "%s\t%s\t%s\n",
-			p.ResourceName,
-			sanitizeTab(primaryName(p)),
-			sanitizeTab(primaryEmail(p)),
-		)
+	if err := outfmt.WriteTable(
+		ctx,
+		stdoutWriter(ctx),
+		compactPeopleRows(peopleList),
+		directoryPersonColumns(),
+	); err != nil {
+		return err
 	}
-	printNextPageHint(u, nextPageToken)
+	printNextPageHintWithAll(u, nextPageToken, "--all/--all-pages")
 	return nil
 }
 
@@ -138,13 +123,16 @@ type ContactsDirectorySearchCmd struct {
 
 func (c *ContactsDirectorySearchCmd) Run(ctx context.Context, flags *RootFlags) error {
 	u := ui.FromContext(ctx)
+	query := strings.Join(c.Query, " ")
+	if c.Max <= 0 {
+		return usage("max must be > 0")
+	}
 	account, err := requireAccount(flags)
 	if err != nil {
 		return err
 	}
-	query := strings.Join(c.Query, " ")
 
-	svc, err := newPeopleDirectoryService(ctx, account)
+	svc, err := peopleDirectoryService(ctx, account)
 	if err != nil {
 		return err
 	}
@@ -162,27 +150,16 @@ func (c *ContactsDirectorySearchCmd) Run(ctx context.Context, flags *RootFlags) 
 		if strings.TrimSpace(pageToken) != "" {
 			call = call.PageToken(pageToken)
 		}
-		resp, err := call.Do()
-		if err != nil {
-			return nil, "", err
+		resp, callErr := call.Do()
+		if callErr != nil {
+			return nil, "", callErr
 		}
 		return resp.People, resp.NextPageToken, nil
 	}
 
-	var peopleList []*people.Person
-	nextPageToken := ""
-	if c.All {
-		all, err := collectAllPages(c.Page, fetch)
-		if err != nil {
-			return err
-		}
-		peopleList = all
-	} else {
-		var err error
-		peopleList, nextPageToken, err = fetch(c.Page)
-		if err != nil {
-			return err
-		}
+	peopleList, nextPageToken, err := loadPagedItems(c.Page, c.All, fetch)
+	if err != nil {
+		return err
 	}
 	if outfmt.IsJSON(ctx) {
 		type item struct {
@@ -201,7 +178,7 @@ func (c *ContactsDirectorySearchCmd) Run(ctx context.Context, flags *RootFlags) 
 				Email:    primaryEmail(p),
 			})
 		}
-		if err := outfmt.WriteJSON(ctx, os.Stdout, map[string]any{
+		if err := outfmt.WriteJSON(ctx, stdoutWriter(ctx), map[string]any{
 			"people":        items,
 			"nextPageToken": nextPageToken,
 		}); err != nil {
@@ -218,28 +195,24 @@ func (c *ContactsDirectorySearchCmd) Run(ctx context.Context, flags *RootFlags) 
 		return failEmptyExit(c.FailEmpty)
 	}
 
-	w, flush := tableWriter(ctx)
-	defer flush()
-	fmt.Fprintln(w, "RESOURCE\tNAME\tEMAIL")
-	for _, p := range peopleList {
-		if p == nil {
-			continue
-		}
-		fmt.Fprintf(w, "%s\t%s\t%s\n",
-			p.ResourceName,
-			sanitizeTab(primaryName(p)),
-			sanitizeTab(primaryEmail(p)),
-		)
+	if err := outfmt.WriteTable(
+		ctx,
+		stdoutWriter(ctx),
+		compactPeopleRows(peopleList),
+		directoryPersonColumns(),
+	); err != nil {
+		return err
 	}
-	printNextPageHint(u, nextPageToken)
+	printNextPageHintWithAll(u, nextPageToken, "--all/--all-pages")
 	return nil
 }
 
 type ContactsOtherCmd struct {
 	List   ContactsOtherListCmd   `cmd:"" name:"list" help:"List other contacts"`
 	Search ContactsOtherSearchCmd `cmd:"" name:"search" help:"Search other contacts"`
-	Delete ContactsOtherDeleteCmd `cmd:"" name:"delete" help:"Delete an other contact"`
 }
+
+const contactsOtherReadMask = "names,emailAddresses,phoneNumbers"
 
 type ContactsOtherListCmd struct {
 	Max       int64  `name:"max" aliases:"limit" help:"Max results" default:"100"`
@@ -250,45 +223,37 @@ type ContactsOtherListCmd struct {
 
 func (c *ContactsOtherListCmd) Run(ctx context.Context, flags *RootFlags) error {
 	u := ui.FromContext(ctx)
+	if c.Max <= 0 {
+		return usage("max must be > 0")
+	}
 	account, err := requireAccount(flags)
 	if err != nil {
 		return err
 	}
 
-	svc, err := newPeopleOtherContactsService(ctx, account)
+	svc, err := peopleOtherContactsService(ctx, account)
 	if err != nil {
 		return err
 	}
 
 	fetch := func(pageToken string) ([]*people.Person, string, error) {
 		call := svc.OtherContacts.List().
-			ReadMask(contactsReadMask).
+			ReadMask(contactsOtherReadMask).
 			PageSize(c.Max).
 			Context(ctx)
 		if strings.TrimSpace(pageToken) != "" {
 			call = call.PageToken(pageToken)
 		}
-		resp, err := call.Do()
-		if err != nil {
-			return nil, "", err
+		resp, callErr := call.Do()
+		if callErr != nil {
+			return nil, "", callErr
 		}
 		return resp.OtherContacts, resp.NextPageToken, nil
 	}
 
-	var contacts []*people.Person
-	nextPageToken := ""
-	if c.All {
-		all, err := collectAllPages(c.Page, fetch)
-		if err != nil {
-			return err
-		}
-		contacts = all
-	} else {
-		var err error
-		contacts, nextPageToken, err = fetch(c.Page)
-		if err != nil {
-			return err
-		}
+	contacts, nextPageToken, err := loadPagedItems(c.Page, c.All, fetch)
+	if err != nil {
+		return err
 	}
 	if outfmt.IsJSON(ctx) {
 		type item struct {
@@ -309,7 +274,7 @@ func (c *ContactsOtherListCmd) Run(ctx context.Context, flags *RootFlags) error 
 				Phone:    primaryPhone(p),
 			})
 		}
-		if err := outfmt.WriteJSON(ctx, os.Stdout, map[string]any{
+		if err := outfmt.WriteJSON(ctx, stdoutWriter(ctx), map[string]any{
 			"contacts":      items,
 			"nextPageToken": nextPageToken,
 		}); err != nil {
@@ -326,21 +291,15 @@ func (c *ContactsOtherListCmd) Run(ctx context.Context, flags *RootFlags) error 
 		return failEmptyExit(c.FailEmpty)
 	}
 
-	w, flush := tableWriter(ctx)
-	defer flush()
-	fmt.Fprintln(w, "RESOURCE\tNAME\tEMAIL\tPHONE")
-	for _, p := range contacts {
-		if p == nil {
-			continue
-		}
-		fmt.Fprintf(w, "%s\t%s\t%s\t%s\n",
-			p.ResourceName,
-			sanitizeTab(primaryName(p)),
-			sanitizeTab(primaryEmail(p)),
-			sanitizeTab(primaryPhone(p)),
-		)
+	if err := outfmt.WriteTable(
+		ctx,
+		stdoutWriter(ctx),
+		compactPeopleRows(contacts),
+		otherContactColumns(),
+	); err != nil {
+		return err
 	}
-	printNextPageHint(u, nextPageToken)
+	printNextPageHintWithAll(u, nextPageToken, "--all/--all-pages")
 	return nil
 }
 
@@ -351,20 +310,24 @@ type ContactsOtherSearchCmd struct {
 
 func (c *ContactsOtherSearchCmd) Run(ctx context.Context, flags *RootFlags) error {
 	u := ui.FromContext(ctx)
+	query := strings.Join(c.Query, " ")
+	if c.Max <= 0 {
+		return usage("max must be > 0")
+	}
 	account, err := requireAccount(flags)
 	if err != nil {
 		return err
 	}
-	query := strings.Join(c.Query, " ")
 
-	svc, err := newPeopleOtherContactsService(ctx, account)
+	svc, err := peopleOtherContactsService(ctx, account)
 	if err != nil {
 		return err
 	}
 
+	warmSearchOtherContactsCache(ctx, svc)
 	resp, err := svc.OtherContacts.Search().
 		Query(query).
-		ReadMask(contactsReadMask).
+		ReadMask(contactsOtherReadMask).
 		PageSize(c.Max).
 		Do()
 	if err != nil {
@@ -390,7 +353,7 @@ func (c *ContactsOtherSearchCmd) Run(ctx context.Context, flags *RootFlags) erro
 				Phone:    primaryPhone(p),
 			})
 		}
-		return outfmt.WriteJSON(ctx, os.Stdout, map[string]any{"contacts": items})
+		return outfmt.WriteJSON(ctx, stdoutWriter(ctx), map[string]any{"contacts": items})
 	}
 
 	if len(resp.Results) == 0 {
@@ -398,76 +361,5 @@ func (c *ContactsOtherSearchCmd) Run(ctx context.Context, flags *RootFlags) erro
 		return nil
 	}
 
-	w, flush := tableWriter(ctx)
-	defer flush()
-	fmt.Fprintln(w, "RESOURCE\tNAME\tEMAIL\tPHONE")
-	for _, r := range resp.Results {
-		p := r.Person
-		if p == nil {
-			continue
-		}
-		fmt.Fprintf(w, "%s\t%s\t%s\t%s\n",
-			p.ResourceName,
-			sanitizeTab(primaryName(p)),
-			sanitizeTab(primaryEmail(p)),
-			sanitizeTab(primaryPhone(p)),
-		)
-	}
-	return nil
-}
-
-type ContactsOtherDeleteCmd struct {
-	ResourceName string `arg:"" name:"resourceName" help:"Resource name (otherContacts/...)"`
-}
-
-func (c *ContactsOtherDeleteCmd) Run(ctx context.Context, flags *RootFlags) error {
-	u := ui.FromContext(ctx)
-	resourceName := strings.TrimSpace(c.ResourceName)
-	if !strings.HasPrefix(resourceName, "otherContacts/") {
-		return usage("resourceName must start with otherContacts/")
-	}
-
-	if confirmErr := confirmDestructive(ctx, flags, fmt.Sprintf("delete other contact %s", resourceName)); confirmErr != nil {
-		return confirmErr
-	}
-
-	account, err := requireAccount(flags)
-	if err != nil {
-		return err
-	}
-
-	if err := deleteOtherContact(ctx, account, resourceName); err != nil {
-		return err
-	}
-	return writeDeleteResult(ctx, u, resourceName)
-}
-
-func deleteOtherContact(ctx context.Context, account, resourceName string) error {
-	otherSvc, err := newPeopleOtherContactsService(ctx, account)
-	if err != nil {
-		return err
-	}
-	copied, err := otherSvc.OtherContacts.CopyOtherContactToMyContactsGroup(
-		resourceName,
-		&people.CopyOtherContactToMyContactsGroupRequest{},
-	).Do()
-	if err != nil {
-		return fmt.Errorf("copy to my contacts: %w", err)
-	}
-	copiedResource := ""
-	if copied != nil {
-		copiedResource = strings.TrimSpace(copied.ResourceName)
-	}
-	if copiedResource == "" {
-		return fmt.Errorf("copy to my contacts: empty resource name")
-	}
-
-	contactsSvc, err := newPeopleContactsService(ctx, account)
-	if err != nil {
-		return err
-	}
-	if _, err := contactsSvc.People.DeleteContact(copiedResource).Do(); err != nil {
-		return fmt.Errorf("delete copied contact %s: %w", copiedResource, err)
-	}
-	return nil
+	return outfmt.WriteTable(ctx, stdoutWriter(ctx), contactSearchRows(resp.Results), otherContactColumns())
 }

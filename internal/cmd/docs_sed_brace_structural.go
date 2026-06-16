@@ -190,7 +190,7 @@ func parseChipURI(uri string) *ChipSpec {
 	switch chipType {
 	case "person":
 		spec.Type = ChipTypePerson
-	case "date":
+	case strDate:
 		spec.Type = ChipTypeDate
 	case strFile:
 		spec.Type = ChipTypeFile

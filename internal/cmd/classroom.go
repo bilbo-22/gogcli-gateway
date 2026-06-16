@@ -1,9 +1,5 @@
 package cmd
 
-import "github.com/steipete/gogcli/internal/googleapi"
-
-var newClassroomService = googleapi.NewClassroom
-
 type ClassroomCmd struct {
 	Courses         ClassroomCoursesCmd         `cmd:"" aliases:"course" help:"Courses"`
 	Students        ClassroomStudentsCmd        `cmd:"" aliases:"student" help:"Course students"`

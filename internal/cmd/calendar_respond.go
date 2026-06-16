@@ -2,9 +2,6 @@ package cmd
 
 import (
 	"context"
-	"errors"
-	"fmt"
-	"os"
 	"strings"
 
 	"google.golang.org/api/calendar/v3"
@@ -22,11 +19,15 @@ type CalendarRespondCmd struct {
 
 func (c *CalendarRespondCmd) Run(ctx context.Context, flags *RootFlags) error {
 	u := ui.FromContext(ctx)
-	calendarID := strings.TrimSpace(c.CalendarID)
-	eventID := normalizeCalendarEventID(c.EventID)
-	if calendarID == "" {
-		return usage("empty calendarId")
+	store, err := commandConfigStore(ctx)
+	if err != nil {
+		return err
 	}
+	calendarID, err := prepareCalendarID(store, c.CalendarID, false)
+	if err != nil {
+		return err
+	}
+	eventID := normalizeCalendarEventID(c.EventID)
 	if eventID == "" {
 		return usage("empty eventId")
 	}
@@ -44,39 +45,30 @@ func (c *CalendarRespondCmd) Run(ctx context.Context, flags *RootFlags) error {
 		}
 	}
 	if !isValid {
-		return fmt.Errorf("invalid status %q; must be one of: %s", status, strings.Join(validStatuses, ", "))
+		return usagef("invalid status %q; must be one of: %s", status, strings.Join(validStatuses, ", "))
 	}
 
-	if err := dryRunExit(ctx, flags, "calendar.respond", map[string]any{
+	if dryRunErr := dryRunExit(ctx, flags, "calendar.respond", map[string]any{
 		"calendar_id": calendarID,
 		"event_id":    eventID,
 		"status":      status,
 		"comment":     strings.TrimSpace(c.Comment),
-	}); err != nil {
-		return err
+	}); dryRunErr != nil {
+		return dryRunErr
 	}
 
-	account, err := requireAccount(flags)
+	mutation, err := newCalendarMutationContext(ctx, flags, calendarID)
 	if err != nil {
 		return err
 	}
 
-	svc, err := newCalendarService(ctx, account)
-	if err != nil {
-		return err
-	}
-	calendarID, err = resolveCalendarID(ctx, svc, calendarID)
-	if err != nil {
-		return err
-	}
-
-	event, err := svc.Events.Get(calendarID, eventID).Do()
+	event, err := mutation.svc.Events.Get(mutation.calendarID, eventID).Do()
 	if err != nil {
 		return err
 	}
 
 	if len(event.Attendees) == 0 {
-		return errors.New("event has no attendees")
+		return usage("event has no attendees")
 	}
 
 	var selfAttendee *int
@@ -88,11 +80,11 @@ func (c *CalendarRespondCmd) Run(ctx context.Context, flags *RootFlags) error {
 	}
 
 	if selfAttendee == nil {
-		return errors.New("you are not an attendee of this event")
+		return usage("you are not an attendee of this event")
 	}
 
 	if event.Attendees[*selfAttendee].Organizer {
-		return errors.New("cannot respond to your own event (you are the organizer)")
+		return usage("cannot respond to your own event (you are the organizer)")
 	}
 
 	event.Attendees[*selfAttendee].ResponseStatus = status
@@ -104,24 +96,23 @@ func (c *CalendarRespondCmd) Run(ctx context.Context, flags *RootFlags) error {
 	patch := &calendar.Event{
 		Attendees: event.Attendees,
 	}
-	updated, err := svc.Events.Patch(calendarID, eventID, patch).Do()
+	updated, err := mutation.patchEvent(ctx, eventID, patch, "")
 	if err != nil {
 		return err
 	}
 
 	if outfmt.IsJSON(ctx) {
-		tz, loc, _ := getCalendarLocation(ctx, svc, calendarID)
-		return outfmt.WriteJSON(ctx, os.Stdout, map[string]any{"event": wrapEventWithDaysWithTimezone(updated, tz, loc)})
+		return mutation.writeEvent(ctx, updated)
 	}
 
-	u.Out().Printf("id\t%s", updated.Id)
-	u.Out().Printf("summary\t%s", orEmpty(updated.Summary, "(no title)"))
-	u.Out().Printf("response_status\t%s", status)
+	u.Out().Linef("id\t%s", updated.Id)
+	u.Out().Linef("summary\t%s", orEmpty(updated.Summary, "(no title)"))
+	u.Out().Linef("response_status\t%s", status)
 	if strings.TrimSpace(c.Comment) != "" {
-		u.Out().Printf("comment\t%s", strings.TrimSpace(c.Comment))
+		u.Out().Linef("comment\t%s", strings.TrimSpace(c.Comment))
 	}
 	if updated.HtmlLink != "" {
-		u.Out().Printf("link\t%s", updated.HtmlLink)
+		u.Out().Linef("link\t%s", updated.HtmlLink)
 	}
 	return nil
 }

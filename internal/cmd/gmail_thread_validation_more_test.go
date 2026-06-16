@@ -1,6 +1,7 @@
 package cmd
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"io"
@@ -10,18 +11,16 @@ import (
 	"testing"
 
 	"google.golang.org/api/gmail/v1"
-	"google.golang.org/api/option"
-
-	"github.com/steipete/gogcli/internal/outfmt"
-	"github.com/steipete/gogcli/internal/ui"
 )
 
 func TestGmailThreadGet_ValidationErrors(t *testing.T) {
-	u, uiErr := ui.New(ui.Options{Stdout: io.Discard, Stderr: io.Discard, Color: "never"})
-	if uiErr != nil {
-		t.Fatalf("ui.New: %v", uiErr)
-	}
-	ctx := ui.WithUI(context.Background(), u)
+	ctx := withGmailTestServiceFactory(
+		newCmdRuntimeOutputContext(t, io.Discard, io.Discard),
+		func(context.Context, string) (*gmail.Service, error) {
+			t.Fatal("gmail service should not be created")
+			return nil, context.Canceled
+		},
+	)
 
 	if err := (&GmailThreadGetCmd{}).Run(ctx, &RootFlags{}); err == nil {
 		t.Fatalf("expected missing account error")
@@ -32,11 +31,13 @@ func TestGmailThreadGet_ValidationErrors(t *testing.T) {
 }
 
 func TestGmailThreadModify_ValidationErrors(t *testing.T) {
-	u, uiErr := ui.New(ui.Options{Stdout: io.Discard, Stderr: io.Discard, Color: "never"})
-	if uiErr != nil {
-		t.Fatalf("ui.New: %v", uiErr)
-	}
-	ctx := ui.WithUI(context.Background(), u)
+	ctx := withGmailTestServiceFactory(
+		newCmdRuntimeOutputContext(t, io.Discard, io.Discard),
+		func(context.Context, string) (*gmail.Service, error) {
+			t.Fatal("gmail service should not be created")
+			return nil, context.Canceled
+		},
+	)
 	flags := &RootFlags{Account: "a@b.com"}
 
 	if err := (&GmailThreadModifyCmd{}).Run(ctx, flags); err == nil {
@@ -48,9 +49,6 @@ func TestGmailThreadModify_ValidationErrors(t *testing.T) {
 }
 
 func TestGmailThreadAttachments_EmptyThread_JSON(t *testing.T) {
-	origNew := newGmailService
-	t.Cleanup(func() { newGmailService = origNew })
-
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if strings.Contains(r.URL.Path, "/gmail/v1/users/me/threads/t1") && r.Method == http.MethodGet {
 			w.Header().Set("Content-Type", "application/json")
@@ -64,29 +62,17 @@ func TestGmailThreadAttachments_EmptyThread_JSON(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	svc, err := gmail.NewService(context.Background(),
-		option.WithoutAuthentication(),
-		option.WithHTTPClient(srv.Client()),
-		option.WithEndpoint(srv.URL+"/"),
+	var out bytes.Buffer
+	ctx := withGmailTestService(
+		newCmdRuntimeJSONOutputContext(t, &out, io.Discard),
+		newGmailServiceFromServer(t, srv),
 	)
-	if err != nil {
-		t.Fatalf("NewService: %v", err)
-	}
-	newGmailService = func(context.Context, string) (*gmail.Service, error) { return svc, nil }
-
-	u, uiErr := ui.New(ui.Options{Stdout: io.Discard, Stderr: io.Discard, Color: "never"})
-	if uiErr != nil {
-		t.Fatalf("ui.New: %v", uiErr)
-	}
-	ctx := outfmt.WithMode(ui.WithUI(context.Background(), u), outfmt.Mode{JSON: true})
 	flags := &RootFlags{Account: "a@b.com"}
 
-	out := captureStdout(t, func() {
-		if err := (&GmailThreadAttachmentsCmd{ThreadID: "t1"}).Run(ctx, flags); err != nil {
-			t.Fatalf("attachments: %v", err)
-		}
-	})
-	if !strings.Contains(out, "\"attachments\"") {
-		t.Fatalf("unexpected output: %q", out)
+	if err := (&GmailThreadAttachmentsCmd{ThreadID: "t1"}).Run(ctx, flags); err != nil {
+		t.Fatalf("attachments: %v", err)
+	}
+	if !strings.Contains(out.String(), "\"attachments\"") {
+		t.Fatalf("unexpected output: %q", out.String())
 	}
 }

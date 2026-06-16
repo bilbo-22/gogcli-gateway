@@ -1,21 +1,14 @@
 package cmd
 
 import (
-	"context"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
-
-	"google.golang.org/api/gmail/v1"
-	"google.golang.org/api/option"
 )
 
 func TestExecute_GmailSettingsMoreCommands_JSON(t *testing.T) {
-	origNew := newGmailService
-	t.Cleanup(func() { newGmailService = origNew })
-
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		path := r.URL.Path
 		switch {
@@ -195,131 +188,38 @@ func TestExecute_GmailSettingsMoreCommands_JSON(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	svc, err := gmail.NewService(context.Background(),
-		option.WithoutAuthentication(),
-		option.WithHTTPClient(srv.Client()),
-		option.WithEndpoint(srv.URL+"/"),
-	)
-	if err != nil {
-		t.Fatalf("NewService: %v", err)
+	svc := newGmailServiceFromServer(t, srv)
+	commands := []struct {
+		name string
+		args []string
+	}{
+		{name: "delegates list", args: []string{"--json", "--account", "a@b.com", "gmail", "delegates", "list"}},
+		{name: "delegates get", args: []string{"--json", "--account", "a@b.com", "gmail", "delegates", "get", "d@b.com"}},
+		{name: "delegates add", args: []string{"--json", "--force", "--account", "a@b.com", "gmail", "delegates", "add", "d@b.com"}},
+		{name: "delegates remove", args: []string{"--json", "--force", "--account", "a@b.com", "gmail", "delegates", "remove", "d@b.com"}},
+		{name: "forwarding list", args: []string{"--json", "--account", "a@b.com", "gmail", "forwarding", "list"}},
+		{name: "forwarding get", args: []string{"--json", "--account", "a@b.com", "gmail", "forwarding", "get", "f@b.com"}},
+		{name: "forwarding create", args: []string{"--json", "--account", "a@b.com", "gmail", "forwarding", "create", "f@b.com"}},
+		{name: "forwarding delete", args: []string{"--json", "--force", "--account", "a@b.com", "gmail", "forwarding", "delete", "f@b.com"}},
+		{name: "autoforward get", args: []string{"--json", "--account", "a@b.com", "gmail", "autoforward", "get"}},
+		{name: "autoforward update", args: []string{"--json", "--account", "a@b.com", "gmail", "autoforward", "update", "--enable", "--email", "f@b.com", "--disposition", "archive"}},
+		{name: "vacation get", args: []string{"--json", "--account", "a@b.com", "gmail", "vacation", "get"}},
+		{name: "vacation update", args: []string{"--json", "--account", "a@b.com", "gmail", "vacation", "update", "--enable", "--subject", "S2", "--body", "<b>hi</b>"}},
+		{name: "filters list", args: []string{"--json", "--account", "a@b.com", "gmail", "filters", "list"}},
+		{name: "filters get", args: []string{"--json", "--account", "a@b.com", "gmail", "filters", "get", "f1"}},
+		{name: "filters create", args: []string{"--json", "--account", "a@b.com", "gmail", "filters", "create", "--from", "a@example.com", "--add-label", "Custom"}},
+		{name: "filters delete", args: []string{"--json", "--force", "--account", "a@b.com", "gmail", "filters", "delete", "f1"}},
+		{name: "sendas list", args: []string{"--json", "--account", "a@b.com", "gmail", "sendas", "list"}},
+		{name: "sendas get", args: []string{"--json", "--account", "a@b.com", "gmail", "sendas", "get", "alias@b.com"}},
+		{name: "sendas create", args: []string{"--json", "--account", "a@b.com", "gmail", "sendas", "create", "alias@b.com", "--display-name", "Alias"}},
+		{name: "sendas verify", args: []string{"--json", "--account", "a@b.com", "gmail", "sendas", "verify", "alias@b.com"}},
+		{name: "sendas update", args: []string{"--json", "--account", "a@b.com", "gmail", "sendas", "update", "alias@b.com", "--make-default"}},
+		{name: "sendas delete", args: []string{"--json", "--force", "--account", "a@b.com", "gmail", "sendas", "delete", "alias@b.com"}},
 	}
-	newGmailService = func(context.Context, string) (*gmail.Service, error) { return svc, nil }
-
-	_ = captureStderr(t, func() {
-		_ = captureStdout(t, func() {
-			if err := Execute([]string{"--json", "--account", "a@b.com", "gmail", "delegates", "list"}); err != nil {
-				t.Fatalf("delegates list: %v", err)
-			}
-		})
-		_ = captureStdout(t, func() {
-			if err := Execute([]string{"--json", "--account", "a@b.com", "gmail", "delegates", "get", "d@b.com"}); err != nil {
-				t.Fatalf("delegates get: %v", err)
-			}
-		})
-		_ = captureStdout(t, func() {
-			if err := Execute([]string{"--json", "--account", "a@b.com", "gmail", "delegates", "add", "d@b.com"}); err != nil {
-				t.Fatalf("delegates add: %v", err)
-			}
-		})
-		_ = captureStdout(t, func() {
-			if err := Execute([]string{"--json", "--force", "--account", "a@b.com", "gmail", "delegates", "remove", "d@b.com"}); err != nil {
-				t.Fatalf("delegates remove: %v", err)
-			}
-		})
-
-		_ = captureStdout(t, func() {
-			if err := Execute([]string{"--json", "--account", "a@b.com", "gmail", "forwarding", "list"}); err != nil {
-				t.Fatalf("forwarding list: %v", err)
-			}
-		})
-		_ = captureStdout(t, func() {
-			if err := Execute([]string{"--json", "--account", "a@b.com", "gmail", "forwarding", "get", "f@b.com"}); err != nil {
-				t.Fatalf("forwarding get: %v", err)
-			}
-		})
-		_ = captureStdout(t, func() {
-			if err := Execute([]string{"--json", "--account", "a@b.com", "gmail", "forwarding", "create", "f@b.com"}); err != nil {
-				t.Fatalf("forwarding create: %v", err)
-			}
-		})
-		_ = captureStdout(t, func() {
-			if err := Execute([]string{"--json", "--force", "--account", "a@b.com", "gmail", "forwarding", "delete", "f@b.com"}); err != nil {
-				t.Fatalf("forwarding delete: %v", err)
-			}
-		})
-
-		_ = captureStdout(t, func() {
-			if err := Execute([]string{"--json", "--account", "a@b.com", "gmail", "autoforward", "get"}); err != nil {
-				t.Fatalf("autoforward get: %v", err)
-			}
-		})
-		_ = captureStdout(t, func() {
-			if err := Execute([]string{"--json", "--account", "a@b.com", "gmail", "autoforward", "update", "--enable", "--email", "f@b.com", "--disposition", "archive"}); err != nil {
-				t.Fatalf("autoforward update: %v", err)
-			}
-		})
-
-		_ = captureStdout(t, func() {
-			if err := Execute([]string{"--json", "--account", "a@b.com", "gmail", "vacation", "get"}); err != nil {
-				t.Fatalf("vacation get: %v", err)
-			}
-		})
-		_ = captureStdout(t, func() {
-			if err := Execute([]string{"--json", "--account", "a@b.com", "gmail", "vacation", "update", "--enable", "--subject", "S2", "--body", "<b>hi</b>"}); err != nil {
-				t.Fatalf("vacation update: %v", err)
-			}
-		})
-
-		_ = captureStdout(t, func() {
-			if err := Execute([]string{"--json", "--account", "a@b.com", "gmail", "filters", "list"}); err != nil {
-				t.Fatalf("filters list: %v", err)
-			}
-		})
-		_ = captureStdout(t, func() {
-			if err := Execute([]string{"--json", "--account", "a@b.com", "gmail", "filters", "get", "f1"}); err != nil {
-				t.Fatalf("filters get: %v", err)
-			}
-		})
-		_ = captureStdout(t, func() {
-			if err := Execute([]string{"--json", "--account", "a@b.com", "gmail", "filters", "create", "--from", "a@example.com", "--add-label", "Custom"}); err != nil {
-				t.Fatalf("filters create: %v", err)
-			}
-		})
-		_ = captureStdout(t, func() {
-			if err := Execute([]string{"--json", "--force", "--account", "a@b.com", "gmail", "filters", "delete", "f1"}); err != nil {
-				t.Fatalf("filters delete: %v", err)
-			}
-		})
-
-		_ = captureStdout(t, func() {
-			if err := Execute([]string{"--json", "--account", "a@b.com", "gmail", "sendas", "list"}); err != nil {
-				t.Fatalf("sendas list: %v", err)
-			}
-		})
-		_ = captureStdout(t, func() {
-			if err := Execute([]string{"--json", "--account", "a@b.com", "gmail", "sendas", "get", "alias@b.com"}); err != nil {
-				t.Fatalf("sendas get: %v", err)
-			}
-		})
-		_ = captureStdout(t, func() {
-			if err := Execute([]string{"--json", "--account", "a@b.com", "gmail", "sendas", "create", "alias@b.com", "--display-name", "Alias"}); err != nil {
-				t.Fatalf("sendas create: %v", err)
-			}
-		})
-		_ = captureStdout(t, func() {
-			if err := Execute([]string{"--json", "--account", "a@b.com", "gmail", "sendas", "verify", "alias@b.com"}); err != nil {
-				t.Fatalf("sendas verify: %v", err)
-			}
-		})
-		_ = captureStdout(t, func() {
-			if err := Execute([]string{"--json", "--account", "a@b.com", "gmail", "sendas", "update", "alias@b.com", "--make-default"}); err != nil {
-				t.Fatalf("sendas update: %v", err)
-			}
-		})
-		_ = captureStdout(t, func() {
-			if err := Execute([]string{"--json", "--force", "--account", "a@b.com", "gmail", "sendas", "delete", "alias@b.com"}); err != nil {
-				t.Fatalf("sendas delete: %v", err)
-			}
-		})
-	})
+	for _, command := range commands {
+		result := executeWithGmailTestService(t, command.args, svc)
+		if result.err != nil {
+			t.Fatalf("%s: %v\nstderr=%q", command.name, result.err, result.stderr)
+		}
+	}
 }

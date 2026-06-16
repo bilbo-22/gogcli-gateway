@@ -2,6 +2,7 @@ package googleapi
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -11,6 +12,8 @@ import (
 )
 
 type roundTripFunc func(*http.Request) (*http.Response, error)
+
+var errUnexpectedRequestBody = errors.New("unexpected request body")
 
 func (f roundTripFunc) RoundTrip(req *http.Request) (*http.Response, error) {
 	return f(req)
@@ -282,10 +285,15 @@ func TestEnsureReplayableBodyMore(t *testing.T) {
 	if err != nil {
 		t.Fatalf("new request: %v", err)
 	}
+	req.ContentLength = int64(len("hello"))
 
-	err = ensureReplayableBody(req)
+	replayable, err := ensureReplayableBody(req)
 	if err != nil {
 		t.Fatalf("ensureReplayableBody: %v", err)
+	}
+
+	if !replayable {
+		t.Fatalf("expected replayable body")
 	}
 
 	if req.GetBody == nil {
@@ -310,6 +318,62 @@ func TestEnsureReplayableBodyMore(t *testing.T) {
 
 	if string(body1) != "hello" || string(body2) != "hello" {
 		t.Fatalf("unexpected body: %q %q", body1, body2)
+	}
+}
+
+func TestEnsureReplayableBodySkipsLargeKnownLength(t *testing.T) {
+	req, err := http.NewRequestWithContext(context.Background(), http.MethodPost, "http://example.com", io.NopCloser(strings.NewReader("hello")))
+	if err != nil {
+		t.Fatalf("new request: %v", err)
+	}
+	req.ContentLength = maxBufferedReplayBodyBytes + 1
+
+	replayable, err := ensureReplayableBody(req)
+	if err != nil {
+		t.Fatalf("ensureReplayableBody: %v", err)
+	}
+
+	if replayable {
+		t.Fatalf("expected non-replayable body")
+	}
+
+	if req.GetBody != nil {
+		t.Fatalf("expected GetBody to remain nil")
+	}
+
+	body, err := io.ReadAll(req.Body)
+	if err != nil {
+		t.Fatalf("read body: %v", err)
+	}
+
+	if string(body) != "hello" {
+		t.Fatalf("body was consumed: %q", body)
+	}
+}
+
+func TestEnsureReplayableBodySkipsUnknownLength(t *testing.T) {
+	req, err := http.NewRequestWithContext(context.Background(), http.MethodPost, "http://example.com", io.NopCloser(strings.NewReader("hello")))
+	if err != nil {
+		t.Fatalf("new request: %v", err)
+	}
+	req.ContentLength = 0
+
+	replayable, err := ensureReplayableBody(req)
+	if err != nil {
+		t.Fatalf("ensureReplayableBody: %v", err)
+	}
+
+	if replayable {
+		t.Fatalf("expected non-replayable body")
+	}
+
+	body, err := io.ReadAll(req.Body)
+	if err != nil {
+		t.Fatalf("read body: %v", err)
+	}
+
+	if string(body) != "hello" {
+		t.Fatalf("body was consumed: %q", body)
 	}
 }
 
@@ -346,6 +410,7 @@ func TestRetryTransportRoundTripResetsBody(t *testing.T) {
 	if err != nil {
 		t.Fatalf("new request: %v", err)
 	}
+	req.ContentLength = int64(len("payload"))
 
 	resp, err := rt.RoundTrip(req)
 	if err != nil {
@@ -359,6 +424,52 @@ func TestRetryTransportRoundTripResetsBody(t *testing.T) {
 
 	if gotBodies[0] != "payload" || gotBodies[1] != "payload" {
 		t.Fatalf("unexpected bodies: %#v", gotBodies)
+	}
+}
+
+func TestRetryTransportRoundTripDoesNotRetryLargeNonReplayableBody(t *testing.T) {
+	calls := 0
+	base := roundTripFunc(func(req *http.Request) (*http.Response, error) {
+		calls++
+
+		body, err := io.ReadAll(req.Body)
+		if err != nil {
+			return nil, fmt.Errorf("read body: %w", err)
+		}
+
+		if string(body) != "payload" {
+			t.Errorf("unexpected body: %q", body)
+			return nil, errUnexpectedRequestBody
+		}
+
+		return newTestResponse(http.StatusTooManyRequests, "rate"), nil
+	})
+
+	rt := &RetryTransport{
+		Base:          base,
+		MaxRetries429: 1,
+		MaxRetries5xx: 0,
+		BaseDelay:     0,
+	}
+
+	req, err := http.NewRequestWithContext(context.Background(), http.MethodPost, "http://example.com", io.NopCloser(strings.NewReader("payload")))
+	if err != nil {
+		t.Fatalf("new request: %v", err)
+	}
+	req.ContentLength = maxBufferedReplayBodyBytes + 1
+
+	resp, err := rt.RoundTrip(req)
+	if err != nil {
+		t.Fatalf("round trip: %v", err)
+	}
+	_ = resp.Body.Close()
+
+	if resp.StatusCode != http.StatusTooManyRequests {
+		t.Fatalf("expected 429, got %d", resp.StatusCode)
+	}
+
+	if calls != 1 {
+		t.Fatalf("expected one call, got %d", calls)
 	}
 }
 

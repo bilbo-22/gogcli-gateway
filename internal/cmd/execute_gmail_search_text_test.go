@@ -1,21 +1,14 @@
 package cmd
 
 import (
-	"context"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
-
-	"google.golang.org/api/gmail/v1"
-	"google.golang.org/api/option"
 )
 
 func TestExecute_GmailSearch_Text(t *testing.T) {
-	origNew := newGmailService
-	t.Cleanup(func() { newGmailService = origNew })
-
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		path := r.URL.Path
 		switch {
@@ -60,32 +53,20 @@ func TestExecute_GmailSearch_Text(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	svc, err := gmail.NewService(context.Background(),
-		option.WithoutAuthentication(),
-		option.WithHTTPClient(srv.Client()),
-		option.WithEndpoint(srv.URL+"/"),
+	result := executeWithGmailTestService(
+		t,
+		[]string{"--plain", "--account", "a@b.com", "gmail", "search", "newer_than:7d", "--max", "1"},
+		newGmailServiceFromServer(t, srv),
 	)
-	if err != nil {
-		t.Fatalf("NewService: %v", err)
+	if result.err != nil {
+		t.Fatalf("Execute: %v\nstderr=%q", result.err, result.stderr)
 	}
-	newGmailService = func(context.Context, string) (*gmail.Service, error) { return svc, nil }
-
-	out := captureStdout(t, func() {
-		_ = captureStderr(t, func() {
-			if err := Execute([]string{"--account", "a@b.com", "gmail", "search", "newer_than:7d", "--max", "1"}); err != nil {
-				t.Fatalf("Execute: %v", err)
-			}
-		})
-	})
-	if !strings.Contains(out, "ID") || !strings.Contains(out, "Hello") {
-		t.Fatalf("unexpected output: %q", out)
+	if !strings.Contains(result.stdout, "ID") || !strings.Contains(result.stdout, "Hello") {
+		t.Fatalf("unexpected output: %q", result.stdout)
 	}
 }
 
 func TestExecute_GmailSearch_Text_NoResults(t *testing.T) {
-	origNew := newGmailService
-	t.Cleanup(func() { newGmailService = origNew })
-
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		path := r.URL.Path
 		switch {
@@ -108,22 +89,51 @@ func TestExecute_GmailSearch_Text_NoResults(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	svc, err := gmail.NewService(context.Background(),
-		option.WithoutAuthentication(),
-		option.WithHTTPClient(srv.Client()),
-		option.WithEndpoint(srv.URL+"/"),
+	result := executeWithGmailTestService(
+		t,
+		[]string{"--plain", "--account", "a@b.com", "gmail", "search", "newer_than:7d"},
+		newGmailServiceFromServer(t, srv),
 	)
-	if err != nil {
-		t.Fatalf("NewService: %v", err)
+	if result.err != nil {
+		t.Fatalf("Execute: %v\nstderr=%q", result.err, result.stderr)
 	}
-	newGmailService = func(context.Context, string) (*gmail.Service, error) { return svc, nil }
+	if !strings.Contains(result.stderr, "No results") {
+		t.Fatalf("unexpected stderr: %q", result.stderr)
+	}
+}
 
-	errOut := captureStderr(t, func() {
-		if err := Execute([]string{"--account", "a@b.com", "gmail", "search", "newer_than:7d"}); err != nil {
-			t.Fatalf("Execute: %v", err)
+func TestExecute_GmailSearch_AppliesSystemLabelFilters(t *testing.T) {
+	var gotQuery string
+	var gotLabels []string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		path := r.URL.Path
+		switch {
+		case strings.Contains(path, "/users/me/threads") && !strings.Contains(path, "/users/me/threads/"):
+			gotQuery = r.URL.Query().Get("q")
+			gotLabels = r.URL.Query()["labelIds"]
+			w.Header().Set("Content-Type", "application/json")
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"threads": []map[string]any{},
+			})
+			return
+		default:
+			http.NotFound(w, r)
+			return
 		}
-	})
-	if !strings.Contains(errOut, "No results") {
-		t.Fatalf("unexpected stderr: %q", errOut)
+	}))
+	defer srv.Close()
+
+	result := executeWithGmailTestService(
+		t,
+		[]string{"--plain", "--account", "a@b.com", "gmail", "search", "in:spam is:unread", "--max", "1000"},
+		newGmailServiceFromServer(t, srv),
+	)
+	if result.err != nil {
+		t.Fatalf("Execute: %v\nstderr=%q", result.err, result.stderr)
 	}
+
+	if gotQuery != "in:spam is:unread" {
+		t.Fatalf("unexpected query: %q", gotQuery)
+	}
+	assertSameStrings(t, gotLabels, []string{"SPAM", "UNREAD"})
 }

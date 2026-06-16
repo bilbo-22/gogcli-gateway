@@ -3,24 +3,27 @@ package cmd
 import (
 	"context"
 	"fmt"
-	"os"
 	"sort"
 	"strings"
 
 	"google.golang.org/api/cloudidentity/v1"
 
 	"github.com/steipete/gogcli/internal/errfmt"
-	"github.com/steipete/gogcli/internal/googleapi"
 	"github.com/steipete/gogcli/internal/outfmt"
 	"github.com/steipete/gogcli/internal/ui"
 )
-
-var newCloudIdentityService = googleapi.NewCloudIdentityGroups
 
 const (
 	groupRoleOwner   = "OWNER"
 	groupRoleManager = "MANAGER"
 	groupRoleMember  = "MEMBER"
+
+	groupLabelDiscussionForum = "cloudidentity.googleapis.com/groups.discussion_forum"
+	groupLabelDynamic         = "cloudidentity.googleapis.com/groups.dynamic"
+	groupReadonlyScope        = "https://www.googleapis.com/auth/cloud-identity.groups.readonly"
+
+	groupsWorkspaceRequiredMessage = "Cloud Identity Groups require a Google Workspace/Cloud Identity account; consumer accounts (gmail.com/googlemail.com) are not supported."
+	groupsExplicitAccountMessage   = "Groups require --account <workspace-email> when using a direct access token or Application Default Credentials."
 )
 
 type GroupsCmd struct {
@@ -37,12 +40,15 @@ type GroupsListCmd struct {
 
 func (c *GroupsListCmd) Run(ctx context.Context, flags *RootFlags) error {
 	u := ui.FromContext(ctx)
-	account, err := requireAccount(flags)
+	if c.Max <= 0 {
+		return usage("max must be > 0")
+	}
+	account, err := requireGroupsAccount(flags)
 	if err != nil {
 		return err
 	}
 
-	svc, err := newCloudIdentityService(ctx, account)
+	svc, err := cloudIdentityService(ctx, account)
 	if err != nil {
 		return wrapCloudIdentityError(err, account)
 	}
@@ -51,33 +57,22 @@ func (c *GroupsListCmd) Run(ctx context.Context, flags *RootFlags) error {
 	// Using "groups/-" as parent searches across all groups
 	fetch := func(pageToken string) ([]*cloudidentity.GroupRelation, string, error) {
 		call := svc.Groups.Memberships.SearchTransitiveGroups("groups/-").
-			Query("member_key_id == '" + account + "'").
+			Query(searchTransitiveGroupsQuery(account)).
 			PageSize(c.Max).
 			Context(ctx)
 		if strings.TrimSpace(pageToken) != "" {
 			call = call.PageToken(pageToken)
 		}
-		resp, err := call.Do()
-		if err != nil {
-			return nil, "", wrapCloudIdentityError(err, account)
+		resp, callErr := call.Do()
+		if callErr != nil {
+			return nil, "", wrapCloudIdentityError(callErr, account)
 		}
 		return resp.Memberships, resp.NextPageToken, nil
 	}
 
-	var memberships []*cloudidentity.GroupRelation
-	nextPageToken := ""
-	if c.All {
-		all, err := collectAllPages(c.Page, fetch)
-		if err != nil {
-			return err
-		}
-		memberships = all
-	} else {
-		var err error
-		memberships, nextPageToken, err = fetch(c.Page)
-		if err != nil {
-			return err
-		}
+	memberships, nextPageToken, err := loadPagedItems(c.Page, c.All, fetch)
+	if err != nil {
+		return err
 	}
 
 	if outfmt.IsJSON(ctx) {
@@ -97,7 +92,7 @@ func (c *GroupsListCmd) Run(ctx context.Context, flags *RootFlags) error {
 				Role:        getRelationType(m.RelationType),
 			})
 		}
-		if err := outfmt.WriteJSON(ctx, os.Stdout, map[string]any{
+		if err := outfmt.WriteJSON(ctx, stdoutWriter(ctx), map[string]any{
 			"groups":        items,
 			"nextPageToken": nextPageToken,
 		}); err != nil {
@@ -127,8 +122,46 @@ func (c *GroupsListCmd) Run(ctx context.Context, flags *RootFlags) error {
 			sanitizeTab(getRelationType(m.RelationType)),
 		)
 	}
-	printNextPageHint(u, nextPageToken)
+	printNextPageHintWithAll(u, nextPageToken, "--all/--all-pages")
 	return nil
+}
+
+func requireGroupsAccount(flags *RootFlags) (string, error) {
+	account, err := requireAccount(flags)
+	if err != nil {
+		return "", err
+	}
+	if account == accessTokenPlaceholderAccount || account == adcPlaceholderAccount || shouldAutoSelectAccount(account) {
+		return "", usage(groupsExplicitAccountMessage)
+	}
+	if isConsumerAccount(account) {
+		return "", groupsConsumerAccountError()
+	}
+	return account, nil
+}
+
+func requireGroupsAuthAccount(flags *RootFlags) (string, error) {
+	account, err := requireAccount(flags)
+	if err != nil {
+		return "", err
+	}
+	if isADCAuthMode(flags) {
+		return adcPlaceholderAccount, nil
+	}
+	if hasDirectAccessToken(flags) {
+		return accessTokenPlaceholderAccount, nil
+	}
+	if isConsumerAccount(account) {
+		return "", groupsConsumerAccountError()
+	}
+	return account, nil
+}
+
+func groupsConsumerAccountError() error {
+	return &ExitError{
+		Code: exitCodePermissionDenied,
+		Err:  errfmt.NewUserFacingError(groupsWorkspaceRequiredMessage, nil),
+	}
 }
 
 // wrapCloudIdentityError provides helpful error messages for common Cloud Identity API issues.
@@ -140,12 +173,47 @@ func wrapCloudIdentityError(err error, account string) error {
 	}
 	if strings.Contains(errStr, "insufficientPermissions") ||
 		strings.Contains(errStr, "insufficient authentication scopes") {
-		return errfmt.NewUserFacingError("Insufficient permissions for Cloud Identity API; re-authenticate with the cloud-identity.groups.readonly scope: gog auth add <account> --services groups", err)
+		switch account {
+		case accessTokenPlaceholderAccount:
+			return errfmt.NewUserFacingError(
+				fmt.Sprintf(
+					"Insufficient permissions for Cloud Identity API; the direct access token needs Workspace Cloud Identity access and scope %s.",
+					groupReadonlyScope,
+				),
+				err,
+			)
+		case adcPlaceholderAccount:
+			return errfmt.NewUserFacingError(
+				fmt.Sprintf(
+					"Insufficient permissions for Cloud Identity API; the Application Default Credentials principal needs Workspace Cloud Identity access and scope %s. To use a stored delegated service account instead, unset GOG_AUTH_MODE and pass --account <workspace-email>.",
+					groupReadonlyScope,
+				),
+				err,
+			)
+		}
+		return errfmt.NewUserFacingError(
+			fmt.Sprintf(
+				"Insufficient permissions for Cloud Identity API; the active credential needs Workspace Cloud Identity access and scope %s. Stored user OAuth is not supported. For delegated service-account auth, run: gog auth service-account set %s --key <service-account.json>. Direct-token and ADC callers must grant equivalent access to the active principal.",
+				groupReadonlyScope,
+				strings.TrimSpace(account),
+			),
+			err,
+		)
 	}
 	if isConsumerAccount(account) && (strings.Contains(errStr, "invalid argument") || strings.Contains(errStr, "badRequest")) {
-		return errfmt.NewUserFacingError("Cloud Identity groups require a Google Workspace/Cloud Identity account; consumer accounts (gmail.com/googlemail.com) are not supported.", err)
+		return errfmt.NewUserFacingError(groupsWorkspaceRequiredMessage, err)
 	}
 	return err
+}
+
+func searchTransitiveGroupsQuery(memberKeyID string) string {
+	memberKeyID = strings.ReplaceAll(strings.TrimSpace(memberKeyID), "'", "\\'")
+	return fmt.Sprintf(
+		"member_key_id == '%s' && ('%s' in labels || '%s' in labels)",
+		memberKeyID,
+		groupLabelDiscussionForum,
+		groupLabelDynamic,
+	)
 }
 
 // getRelationType returns a human-readable relation type.
@@ -170,17 +238,19 @@ type GroupsMembersCmd struct {
 
 func (c *GroupsMembersCmd) Run(ctx context.Context, flags *RootFlags) error {
 	u := ui.FromContext(ctx)
-	account, err := requireAccount(flags)
-	if err != nil {
-		return err
-	}
-
 	groupEmail := strings.TrimSpace(c.GroupEmail)
 	if groupEmail == "" {
 		return usage("group email required")
 	}
+	if c.Max <= 0 {
+		return usage("max must be > 0")
+	}
+	account, err := requireGroupsAuthAccount(flags)
+	if err != nil {
+		return err
+	}
 
-	svc, err := newCloudIdentityService(ctx, account)
+	svc, err := cloudIdentityService(ctx, account)
 	if err != nil {
 		return wrapCloudIdentityError(err, account)
 	}
@@ -188,7 +258,7 @@ func (c *GroupsMembersCmd) Run(ctx context.Context, flags *RootFlags) error {
 	// First, look up the group by email to get its resource name
 	groupName, err := lookupGroupByEmail(ctx, svc, groupEmail)
 	if err != nil {
-		return fmt.Errorf("failed to find group %q: %w", groupEmail, err)
+		return fmt.Errorf("failed to find group %q: %w", groupEmail, wrapCloudIdentityError(err, account))
 	}
 
 	// List members of the group
@@ -199,27 +269,16 @@ func (c *GroupsMembersCmd) Run(ctx context.Context, flags *RootFlags) error {
 		if strings.TrimSpace(pageToken) != "" {
 			call = call.PageToken(pageToken)
 		}
-		resp, err := call.Do()
-		if err != nil {
-			return nil, "", fmt.Errorf("failed to list members: %w", err)
+		resp, callErr := call.Do()
+		if callErr != nil {
+			return nil, "", fmt.Errorf("failed to list members: %w", wrapCloudIdentityError(callErr, account))
 		}
 		return resp.Memberships, resp.NextPageToken, nil
 	}
 
-	var memberships []*cloudidentity.Membership
-	nextPageToken := ""
-	if c.All {
-		all, err := collectAllPages(c.Page, fetch)
-		if err != nil {
-			return err
-		}
-		memberships = all
-	} else {
-		var err error
-		memberships, nextPageToken, err = fetch(c.Page)
-		if err != nil {
-			return err
-		}
+	memberships, nextPageToken, err := loadPagedItems(c.Page, c.All, fetch)
+	if err != nil {
+		return err
 	}
 
 	if outfmt.IsJSON(ctx) {
@@ -239,7 +298,7 @@ func (c *GroupsMembersCmd) Run(ctx context.Context, flags *RootFlags) error {
 				Type:  m.Type,
 			})
 		}
-		if err := outfmt.WriteJSON(ctx, os.Stdout, map[string]any{
+		if err := outfmt.WriteJSON(ctx, stdoutWriter(ctx), map[string]any{
 			"members":       items,
 			"nextPageToken": nextPageToken,
 		}); err != nil {
@@ -252,7 +311,7 @@ func (c *GroupsMembersCmd) Run(ctx context.Context, flags *RootFlags) error {
 	}
 
 	if len(memberships) == 0 {
-		u.Err().Printf("No members in group %s", groupEmail)
+		u.Err().Linef("No members in group %s", groupEmail)
 		return failEmptyExit(c.FailEmpty)
 	}
 
@@ -269,7 +328,7 @@ func (c *GroupsMembersCmd) Run(ctx context.Context, flags *RootFlags) error {
 			sanitizeTab(m.Type),
 		)
 	}
-	printNextPageHint(u, nextPageToken)
+	printNextPageHintWithAll(u, nextPageToken, "--all/--all-pages")
 	return nil
 }
 

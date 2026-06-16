@@ -42,7 +42,7 @@ func NewWebhookTransport(webhookURL string) *WebhookTransport {
 	return &WebhookTransport{
 		WebhookURL: webhookURL,
 		HTTPClient: &http.Client{
-			Timeout: defaultHTTPTimeout,
+			Timeout: tokenExchangeTimeout,
 		},
 	}
 }

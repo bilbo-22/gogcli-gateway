@@ -274,12 +274,12 @@ func contactSourceETag(p *people.Person) string {
 	return ""
 }
 
-func openFileOrStdin(path string) (io.Reader, func(), error) {
+func openFileOrStdin(ctx context.Context, path string) (io.Reader, func(), error) {
 	if strings.TrimSpace(path) == "" {
 		return nil, nil, usage("missing --from-file path")
 	}
 	if path == "-" {
-		return os.Stdin, nil, nil
+		return stdinReader(ctx), nil, nil
 	}
 	// #nosec G304 -- user-controlled CLI input; reading arbitrary files is expected here.
 	f, err := os.Open(path)
@@ -339,30 +339,43 @@ func contactsUpdateMaskFromKeys(keys map[string]json.RawMessage) ([]string, erro
 	return update, nil
 }
 
-func (c *ContactsUpdateCmd) updateFromJSON(ctx context.Context, svc *people.Service, resourceName string, u *ui.UI) error {
-	reader, closeFn, err := openFileOrStdin(strings.TrimSpace(c.FromFile))
+func (c *ContactsUpdateCmd) readUpdateJSONInput(ctx context.Context, resourceName string) (*people.Person, []string, error) {
+	reader, closeFn, err := openFileOrStdin(ctx, strings.TrimSpace(c.FromFile))
 	if err != nil {
-		return err
+		return nil, nil, err
 	}
 	if closeFn != nil {
 		defer closeFn()
 	}
 	data, err := io.ReadAll(reader)
 	if err != nil {
-		return fmt.Errorf("read JSON: %w", err)
+		return nil, nil, fmt.Errorf("read JSON: %w", err)
 	}
 
 	inputPerson, presentKeys, err := parseContactsUpdateJSON(data)
 	if err != nil {
-		return err
+		return nil, nil, err
 	}
 
 	updateFields, err := contactsUpdateMaskFromKeys(presentKeys)
 	if err != nil {
-		return err
+		return nil, nil, err
 	}
 	if len(updateFields) == 0 {
-		return usage("no updatable fields found in JSON (needs one of updatePersonFields fields like urls, biographies, ...)")
+		return nil, nil, usage("no updatable fields found in JSON (needs one of updatePersonFields fields like urls, biographies, ...)")
+	}
+
+	if strings.TrimSpace(inputPerson.ResourceName) != "" && strings.TrimSpace(inputPerson.ResourceName) != resourceName {
+		return nil, nil, usage("resourceName in JSON does not match CLI argument")
+	}
+
+	return inputPerson, updateFields, nil
+}
+
+func (c *ContactsUpdateCmd) updateFromJSON(ctx context.Context, svc *people.Service, resourceName string, u *ui.UI) error {
+	inputPerson, updateFields, err := c.readUpdateJSONInput(ctx, resourceName)
+	if err != nil {
+		return err
 	}
 
 	// Fetch current metadata/etag (required by updateContact).
@@ -376,10 +389,6 @@ func (c *ContactsUpdateCmd) updateFromJSON(ctx context.Context, svc *people.Serv
 		u.Err().Println("warning: JSON input is missing an etag; consider starting from `gog contacts get ... --json`")
 	} else if !c.IgnoreETag && curETag != "" && inputETag != curETag {
 		return usage("etag mismatch (contact changed). Re-run `gog contacts get ... --json`, re-apply edits, retry (or pass --ignore-etag).")
-	}
-
-	if strings.TrimSpace(inputPerson.ResourceName) != "" && strings.TrimSpace(inputPerson.ResourceName) != resourceName {
-		return usage("resourceName in JSON does not match CLI argument")
 	}
 
 	// Enforce resourceName and required metadata.
@@ -398,8 +407,8 @@ func (c *ContactsUpdateCmd) updateFromJSON(ctx context.Context, svc *people.Serv
 		return err
 	}
 	if outfmt.IsJSON(ctx) {
-		return outfmt.WriteJSON(ctx, os.Stdout, map[string]any{"contact": updated})
+		return outfmt.WriteJSON(ctx, stdoutWriter(ctx), map[string]any{"contact": updated})
 	}
-	u.Out().Printf("resource\t%s", updated.ResourceName)
+	u.Out().Linef("resource\t%s", updated.ResourceName)
 	return nil
 }

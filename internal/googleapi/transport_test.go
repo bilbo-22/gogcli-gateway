@@ -403,12 +403,19 @@ func TestRetryTransport_WithRequestBody(t *testing.T) {
 
 func TestEnsureReplayableBody(t *testing.T) {
 	req, _ := http.NewRequestWithContext(context.Background(), "POST", "https://example.com", io.NopCloser(strings.NewReader("hello")))
+
+	req.ContentLength = int64(len("hello"))
 	if req.GetBody != nil {
 		t.Fatalf("expected nil GetBody")
 	}
 
-	if err := ensureReplayableBody(req); err != nil {
+	replayable, err := ensureReplayableBody(req)
+	if err != nil {
 		t.Fatalf("ensureReplayableBody: %v", err)
+	}
+
+	if !replayable {
+		t.Fatalf("expected replayable body")
 	}
 
 	if req.GetBody == nil {

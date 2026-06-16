@@ -4,7 +4,6 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
-	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -14,13 +13,9 @@ import (
 	"google.golang.org/api/option"
 
 	"github.com/steipete/gogcli/internal/outfmt"
-	"github.com/steipete/gogcli/internal/ui"
 )
 
 func TestDriveCommentsListCmd_TextAndJSON(t *testing.T) {
-	origNew := newDriveService
-	t.Cleanup(func() { newDriveService = origNew })
-
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		path := strings.TrimPrefix(r.URL.Path, "/drive/v3")
 		switch {
@@ -30,6 +25,9 @@ func TestDriveCommentsListCmd_TextAndJSON(t *testing.T) {
 			}
 			if r.URL.Query().Get("pageToken") != "p1" {
 				t.Fatalf("expected pageToken=p1, got: %q", r.URL.RawQuery)
+			}
+			if r.URL.Query().Get("startModifiedTime") != "2026-06-04T10:00:00Z" {
+				t.Fatalf("expected startModifiedTime, got: %q", r.URL.RawQuery)
 			}
 			fields := r.URL.Query().Get("fields")
 			if !strings.Contains(fields, "quotedFileContent") {
@@ -68,45 +66,34 @@ func TestDriveCommentsListCmd_TextAndJSON(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewService: %v", err)
 	}
-	newDriveService = func(context.Context, string) (*drive.Service, error) { return svc, nil }
 
 	flags := &RootFlags{Account: "a@b.com"}
 
+	var textOut bytes.Buffer
 	var errBuf bytes.Buffer
-	u, err := ui.New(ui.Options{Stdout: io.Discard, Stderr: &errBuf, Color: "never"})
-	if err != nil {
-		t.Fatalf("ui.New: %v", err)
-	}
-	ctx := ui.WithUI(context.Background(), u)
+	ctx := withDriveTestService(newCmdRuntimeOutputContext(t, &textOut, &errBuf), svc)
 	ctx = outfmt.WithMode(ctx, outfmt.Mode{})
 
-	textOut := captureStdout(t, func() {
-		cmd := &DriveCommentsListCmd{}
-		if execErr := runKong(t, cmd, []string{"--max", "1", "--page", "p1", "--include-quoted", "id1"}, ctx, flags); execErr != nil {
-			t.Fatalf("execute: %v", execErr)
-		}
-	})
-	if !strings.Contains(textOut, "QUOTED") || !strings.Contains(textOut, "Hello") || !strings.Contains(textOut, "Alice") {
-		t.Fatalf("unexpected output: %q", textOut)
+	cmd := &DriveCommentsListCmd{}
+	if execErr := runKong(t, cmd, []string{"--max", "1", "--page", "p1", "--since", "2026-06-04T10:00:00Z", "--include-quoted", "id1"}, ctx, flags); execErr != nil {
+		t.Fatalf("execute: %v", execErr)
+	}
+	if !strings.Contains(textOut.String(), "QUOTED") || !strings.Contains(textOut.String(), "Hello") || !strings.Contains(textOut.String(), "Alice") {
+		t.Fatalf("unexpected output: %q", textOut.String())
 	}
 	if !strings.Contains(errBuf.String(), "--page npt") {
 		t.Fatalf("missing next page hint: %q", errBuf.String())
 	}
 
+	var jsonOut bytes.Buffer
 	var errBuf2 bytes.Buffer
-	u2, err := ui.New(ui.Options{Stdout: io.Discard, Stderr: &errBuf2, Color: "never"})
-	if err != nil {
-		t.Fatalf("ui.New: %v", err)
-	}
-	ctx2 := ui.WithUI(context.Background(), u2)
+	ctx2 := withDriveTestService(newCmdRuntimeOutputContext(t, &jsonOut, &errBuf2), svc)
 	ctx2 = outfmt.WithMode(ctx2, outfmt.Mode{JSON: true})
 
-	jsonOut := captureStdout(t, func() {
-		cmd := &DriveCommentsListCmd{}
-		if execErr := runKong(t, cmd, []string{"--max", "1", "--page", "p1", "--include-quoted", "id1"}, ctx2, flags); execErr != nil {
-			t.Fatalf("execute: %v", execErr)
-		}
-	})
+	cmd = &DriveCommentsListCmd{}
+	if execErr := runKong(t, cmd, []string{"--max", "1", "--page", "p1", "--since", "2026-06-04T10:00:00Z", "--include-quoted", "id1"}, ctx2, flags); execErr != nil {
+		t.Fatalf("execute: %v", execErr)
+	}
 	if errBuf2.String() != "" {
 		t.Fatalf("expected no stderr in json mode, got: %q", errBuf2.String())
 	}
@@ -116,8 +103,8 @@ func TestDriveCommentsListCmd_TextAndJSON(t *testing.T) {
 		Comments      []*drive.Comment `json:"comments"`
 		NextPageToken string           `json:"nextPageToken"`
 	}
-	if err := json.Unmarshal([]byte(jsonOut), &parsed); err != nil {
-		t.Fatalf("json parse: %v\nout=%q", err, jsonOut)
+	if err := json.Unmarshal(jsonOut.Bytes(), &parsed); err != nil {
+		t.Fatalf("json parse: %v\nout=%q", err, jsonOut.String())
 	}
 	if parsed.FileID != "id1" || parsed.NextPageToken != "npt" || len(parsed.Comments) != 1 {
 		t.Fatalf("unexpected json: %#v", parsed)
@@ -128,9 +115,6 @@ func TestDriveCommentsListCmd_TextAndJSON(t *testing.T) {
 }
 
 func TestDriveCommentsCreateCmd_JSON(t *testing.T) {
-	origNew := newDriveService
-	t.Cleanup(func() { newDriveService = origNew })
-
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		path := strings.TrimPrefix(r.URL.Path, "/drive/v3")
 		switch {
@@ -175,28 +159,20 @@ func TestDriveCommentsCreateCmd_JSON(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewService: %v", err)
 	}
-	newDriveService = func(context.Context, string) (*drive.Service, error) { return svc, nil }
 
 	flags := &RootFlags{Account: "a@b.com"}
-	ctx := outfmt.WithMode(context.Background(), outfmt.Mode{JSON: true})
-	u, err := ui.New(ui.Options{Stdout: io.Discard, Stderr: io.Discard, Color: "never"})
-	if err != nil {
-		t.Fatalf("ui.New: %v", err)
+	var out bytes.Buffer
+	ctx := withDriveTestService(newCmdRuntimeJSONOutputContext(t, &out, &bytes.Buffer{}), svc)
+	cmd := &DriveCommentsCreateCmd{}
+	if execErr := runKong(t, cmd, []string{"--quoted", "Quote", "id1", "Hello"}, ctx, flags); execErr != nil {
+		t.Fatalf("execute: %v", execErr)
 	}
-	ctx = ui.WithUI(ctx, u)
-
-	out := captureStdout(t, func() {
-		cmd := &DriveCommentsCreateCmd{}
-		if execErr := runKong(t, cmd, []string{"--quoted", "Quote", "id1", "Hello"}, ctx, flags); execErr != nil {
-			t.Fatalf("execute: %v", execErr)
-		}
-	})
 
 	var parsed struct {
 		Comment *drive.Comment `json:"comment"`
 	}
-	if err := json.Unmarshal([]byte(out), &parsed); err != nil {
-		t.Fatalf("json parse: %v out=%q", err, out)
+	if err := json.Unmarshal(out.Bytes(), &parsed); err != nil {
+		t.Fatalf("json parse: %v out=%q", err, out.String())
 	}
 	if parsed.Comment == nil || parsed.Comment.Id != "c1" || parsed.Comment.Content != "Hello" {
 		t.Fatalf("unexpected comment: %#v", parsed.Comment)

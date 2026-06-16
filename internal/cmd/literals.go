@@ -6,5 +6,15 @@ package cmd
 // literals across the package; keeping them in one place avoids accidental
 // coupling to unrelated semantic constants.
 const (
-	literalAll = "all"
+	literalAll     = "all"
+	literalAuto    = "auto"
+	literalDefault = "default"
+	literalError   = "error"
+	literalStyle   = "style"
+	literalTitle   = "title"
+	literalWindows = "windows"
+
+	// literalMarkdownTripleDash is the three-dash token used for YAML
+	// frontmatter delimiters, horizontal rules, and slide separators.
+	literalMarkdownTripleDash = "---"
 )

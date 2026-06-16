@@ -2,21 +2,14 @@ package cmd
 
 import (
 	"bytes"
-	"context"
 	"encoding/json"
 	"io"
 	"net/http"
 	"strings"
 	"testing"
-
-	"github.com/steipete/gogcli/internal/outfmt"
-	"github.com/steipete/gogcli/internal/ui"
 )
 
 func TestDriveURLCmd_TextAndJSON(t *testing.T) {
-	origNew := newDriveService
-	t.Cleanup(func() { newDriveService = origNew })
-
 	svc, closeSrv := newDriveTestService(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		var id string
 		switch {
@@ -46,18 +39,10 @@ func TestDriveURLCmd_TextAndJSON(t *testing.T) {
 	}))
 	defer closeSrv()
 
-	newDriveService = stubDriveService(svc)
-
 	flags := &RootFlags{Account: "a@b.com"}
 
-	// Text mode writes via UI.Out().
 	var outBuf bytes.Buffer
-	u, err := ui.New(ui.Options{Stdout: &outBuf, Stderr: io.Discard, Color: "never"})
-	if err != nil {
-		t.Fatalf("ui.New: %v", err)
-	}
-	ctx := ui.WithUI(context.Background(), u)
-	ctx = outfmt.WithMode(ctx, outfmt.Mode{})
+	ctx := withDriveTestService(newCmdRuntimeOutputContext(t, &outBuf, io.Discard), svc)
 
 	cmd := &DriveURLCmd{}
 	if err := runKong(t, cmd, []string{"id1", "id2"}, ctx, flags); err != nil {
@@ -71,20 +56,12 @@ func TestDriveURLCmd_TextAndJSON(t *testing.T) {
 		t.Fatalf("missing id2 fallback line: %q", gotText)
 	}
 
-	// JSON mode writes to os.Stdout via outfmt.WriteJSON.
-	jsonOut := captureStdout(t, func() {
-		u2, uiErr := ui.New(ui.Options{Stdout: io.Discard, Stderr: io.Discard, Color: "never"})
-		if uiErr != nil {
-			t.Fatalf("ui.New: %v", uiErr)
-		}
-		ctx2 := ui.WithUI(context.Background(), u2)
-		ctx2 = outfmt.WithMode(ctx2, outfmt.Mode{JSON: true})
-
-		cmd2 := &DriveURLCmd{}
-		if err := runKong(t, cmd2, []string{"id1", "id2"}, ctx2, flags); err != nil {
-			t.Fatalf("execute: %v", err)
-		}
-	})
+	var jsonOut bytes.Buffer
+	ctx2 := withDriveTestService(newCmdRuntimeJSONOutputContext(t, &jsonOut, io.Discard), svc)
+	cmd2 := &DriveURLCmd{}
+	if err := runKong(t, cmd2, []string{"id1", "id2"}, ctx2, flags); err != nil {
+		t.Fatalf("execute: %v", err)
+	}
 
 	var parsed struct {
 		URLs []struct {
@@ -92,8 +69,8 @@ func TestDriveURLCmd_TextAndJSON(t *testing.T) {
 			URL string `json:"url"`
 		} `json:"urls"`
 	}
-	if err := json.Unmarshal([]byte(jsonOut), &parsed); err != nil {
-		t.Fatalf("json parse: %v\nout=%q", err, jsonOut)
+	if err := json.Unmarshal(jsonOut.Bytes(), &parsed); err != nil {
+		t.Fatalf("json parse: %v\nout=%q", err, jsonOut.String())
 	}
 	if len(parsed.URLs) != 2 {
 		t.Fatalf("unexpected urls: %#v", parsed.URLs)

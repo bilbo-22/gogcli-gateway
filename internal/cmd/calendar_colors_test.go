@@ -10,12 +10,20 @@ import (
 
 	"google.golang.org/api/calendar/v3"
 	"google.golang.org/api/option"
+
+	"github.com/steipete/gogcli/internal/app"
 )
 
-func TestCalendarColorsCmd_JSON(t *testing.T) {
-	origNew := newCalendarService
-	t.Cleanup(func() { newCalendarService = origNew })
+func executeCalendarColorsTest(t *testing.T, svc *calendar.Service, args ...string) executeTestResult {
+	t.Helper()
+	return executeWithTestRuntime(t, args, &app.Runtime{Services: app.Services{
+		Calendar: func(context.Context, string) (*calendar.Service, error) {
+			return svc, nil
+		},
+	}})
+}
 
+func TestCalendarColorsCmd_JSON(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if strings.Contains(r.URL.Path, "/colors") && r.Method == http.MethodGet {
 			w.Header().Set("Content-Type", "application/json")
@@ -55,15 +63,11 @@ func TestCalendarColorsCmd_JSON(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewService: %v", err)
 	}
-	newCalendarService = func(context.Context, string) (*calendar.Service, error) { return svc, nil }
 
-	out := captureStdout(t, func() {
-		_ = captureStderr(t, func() {
-			if err := Execute([]string{"--json", "--account", "a@b.com", "calendar", "colors"}); err != nil {
-				t.Fatalf("Execute: %v", err)
-			}
-		})
-	})
+	result := executeCalendarColorsTest(t, svc, "--json", "--account", "a@b.com", "calendar", "colors")
+	if result.err != nil {
+		t.Fatalf("Execute: %v", result.err)
+	}
 
 	var parsed struct {
 		Event map[string]struct {
@@ -75,8 +79,8 @@ func TestCalendarColorsCmd_JSON(t *testing.T) {
 			Foreground string `json:"foreground"`
 		} `json:"calendar"`
 	}
-	if err := json.Unmarshal([]byte(out), &parsed); err != nil {
-		t.Fatalf("json parse: %v\nout=%q", err, out)
+	if err := json.Unmarshal([]byte(result.stdout), &parsed); err != nil {
+		t.Fatalf("json parse: %v\nout=%q", err, result.stdout)
 	}
 
 	// Verify event colors
@@ -103,9 +107,6 @@ func TestCalendarColorsCmd_JSON(t *testing.T) {
 }
 
 func TestCalendarColorsCmd_TableOutput(t *testing.T) {
-	origNew := newCalendarService
-	t.Cleanup(func() { newCalendarService = origNew })
-
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if strings.Contains(r.URL.Path, "/colors") && r.Method == http.MethodGet {
 			w.Header().Set("Content-Type", "application/json")
@@ -141,15 +142,12 @@ func TestCalendarColorsCmd_TableOutput(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewService: %v", err)
 	}
-	newCalendarService = func(context.Context, string) (*calendar.Service, error) { return svc, nil }
 
-	out := captureStdout(t, func() {
-		_ = captureStderr(t, func() {
-			if err := Execute([]string{"--account", "a@b.com", "calendar", "colors"}); err != nil {
-				t.Fatalf("Execute: %v", err)
-			}
-		})
-	})
+	result := executeCalendarColorsTest(t, svc, "--account", "a@b.com", "calendar", "colors")
+	if result.err != nil {
+		t.Fatalf("Execute: %v", result.err)
+	}
+	out := result.stdout
 
 	// Verify table headers and content
 	if !strings.Contains(out, "EVENT COLORS:") {
@@ -181,9 +179,6 @@ func TestCalendarColorsCmd_TableOutput(t *testing.T) {
 }
 
 func TestCalendarColorsCmd_EmptyColors(t *testing.T) {
-	origNew := newCalendarService
-	t.Cleanup(func() { newCalendarService = origNew })
-
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if strings.Contains(r.URL.Path, "/colors") && r.Method == http.MethodGet {
 			w.Header().Set("Content-Type", "application/json")
@@ -205,23 +200,19 @@ func TestCalendarColorsCmd_EmptyColors(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewService: %v", err)
 	}
-	newCalendarService = func(context.Context, string) (*calendar.Service, error) { return svc, nil }
 
 	// Test JSON output with empty colors
-	outJSON := captureStdout(t, func() {
-		_ = captureStderr(t, func() {
-			if err := Execute([]string{"--json", "--account", "a@b.com", "calendar", "colors"}); err != nil {
-				t.Fatalf("Execute: %v", err)
-			}
-		})
-	})
+	jsonResult := executeCalendarColorsTest(t, svc, "--json", "--account", "a@b.com", "calendar", "colors")
+	if jsonResult.err != nil {
+		t.Fatalf("Execute JSON: %v", jsonResult.err)
+	}
 
 	var parsed struct {
 		Event    map[string]any `json:"event"`
 		Calendar map[string]any `json:"calendar"`
 	}
-	if err := json.Unmarshal([]byte(outJSON), &parsed); err != nil {
-		t.Fatalf("json parse: %v\nout=%q", err, outJSON)
+	if err := json.Unmarshal([]byte(jsonResult.stdout), &parsed); err != nil {
+		t.Fatalf("json parse: %v\nout=%q", err, jsonResult.stdout)
 	}
 	if len(parsed.Event) != 0 {
 		t.Errorf("expected empty event colors, got %d", len(parsed.Event))
@@ -231,15 +222,12 @@ func TestCalendarColorsCmd_EmptyColors(t *testing.T) {
 	}
 
 	// Test table output with empty colors
-	stderr := captureStderr(t, func() {
-		_ = captureStdout(t, func() {
-			if err := Execute([]string{"--account", "a@b.com", "calendar", "colors"}); err != nil {
-				t.Fatalf("Execute: %v", err)
-			}
-		})
-	})
+	textResult := executeCalendarColorsTest(t, svc, "--account", "a@b.com", "calendar", "colors")
+	if textResult.err != nil {
+		t.Fatalf("Execute text: %v", textResult.err)
+	}
 
-	if !strings.Contains(stderr, "No colors available") {
-		t.Errorf("expected 'No colors available' message, got: %q", stderr)
+	if !strings.Contains(textResult.stderr, "No colors available") {
+		t.Errorf("expected 'No colors available' message, got: %q", textResult.stderr)
 	}
 }

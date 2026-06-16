@@ -39,7 +39,7 @@ func TestPrinter_OutputAndColor(t *testing.T) {
 
 	pOut.Successf("ok %s", "now")
 	pErr.Error("bad")
-	pOut.Printf("hello %s", "world")
+	pOut.Linef("hello %s", "world")
 	pOut.Println("line")
 	pErr.Errorf("err %d", 1)
 
@@ -92,11 +92,25 @@ func TestPrinter_Print(t *testing.T) {
 	}
 }
 
+func TestPrinter_PrintfNoNewline(t *testing.T) {
+	t.Parallel()
+
+	var outBuf bytes.Buffer
+	out := termenv.NewOutput(&outBuf, termenv.WithProfile(termenv.Ascii))
+	p := newPrinter(out, termenv.Ascii)
+
+	p.Printf("hello %s", "world")
+
+	if got := outBuf.String(); got != "hello world" {
+		t.Fatalf("unexpected output: %q", got)
+	}
+}
+
 func TestChooseProfile_NoColorEnv(t *testing.T) {
 	t.Setenv("NO_COLOR", "1")
 
-	if got := chooseProfile(termenv.TrueColor, "always"); got != termenv.Ascii {
-		t.Fatalf("expected ascii when NO_COLOR set, got: %v", got)
+	if got := chooseProfile(termenv.TrueColor, "always"); got != termenv.TrueColor {
+		t.Fatalf("expected always to override NO_COLOR, got: %v", got)
 	}
 }
 

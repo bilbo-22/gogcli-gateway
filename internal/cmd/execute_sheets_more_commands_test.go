@@ -1,21 +1,14 @@
 package cmd
 
 import (
-	"context"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
-
-	"google.golang.org/api/option"
-	"google.golang.org/api/sheets/v4"
 )
 
 func TestExecute_SheetsMoreCommands(t *testing.T) {
-	origNew := newSheetsService
-	t.Cleanup(func() { newSheetsService = origNew })
-
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		path := r.URL.Path
 		switch {
@@ -58,7 +51,27 @@ func TestExecute_SheetsMoreCommands(t *testing.T) {
 				"spreadsheetId": "id1",
 				"properties":    map[string]any{"title": "T"},
 				"sheets": []map[string]any{
-					{"properties": map[string]any{"sheetId": 0, "title": "Sheet1"}},
+					{
+						"properties": map[string]any{"sheetId": 0, "title": "Sheet1"},
+						"data": []map[string]any{
+							{
+								"startRow":    0,
+								"startColumn": 0,
+								"rowData": []map[string]any{
+									{
+										"values": []map[string]any{
+											{
+												"formattedValue": "a",
+												"userEnteredFormat": map[string]any{
+													"textFormat": map[string]any{"bold": true},
+												},
+											},
+										},
+									},
+								},
+							},
+						},
+					},
 				},
 			})
 			return
@@ -78,70 +91,35 @@ func TestExecute_SheetsMoreCommands(t *testing.T) {
 
 	t.Setenv("GOG_ACCOUNT", "a@b.com")
 
-	svc, err := sheets.NewService(context.Background(),
-		option.WithoutAuthentication(),
-		option.WithHTTPClient(srv.Client()),
-		option.WithEndpoint(srv.URL+"/"),
-	)
-	if err != nil {
-		t.Fatalf("NewService: %v", err)
+	svc := newSheetsServiceFromServer(t, srv)
+	run := func(args ...string) executeTestResult {
+		return executeWithSheetsTestService(t, args, svc)
 	}
-	newSheetsService = func(context.Context, string) (*sheets.Service, error) { return svc, nil }
 
-	_ = captureStderr(t, func() {
-		out := captureStdout(t, func() {
-			// Text mode (covers table output).
-			if err := Execute([]string{"sheets", "get", "id1", `Sheet1\\!A1:B1`}); err != nil {
-				t.Fatalf("get: %v", err)
-			}
-		})
-		if !strings.Contains(out, "a") || !strings.Contains(out, "b") {
-			t.Fatalf("unexpected out=%q", out)
+	result := run("--plain", "sheets", "get", "id1", `Sheet1\\!A1:B1`)
+	if result.err != nil {
+		t.Fatalf("get: %v", result.err)
+	}
+	if result.stdout != "a\tb\n" {
+		t.Fatalf("unexpected plain out=%q", result.stdout)
+	}
+
+	commands := []struct {
+		name string
+		args []string
+	}{
+		{"update", []string{"--json", "sheets", "update", "id1", "Sheet1!A1:B1", "a|b"}},
+		{"update json", []string{"--json", "sheets", "update", "id1", "Sheet1!A1:B1", "--values-json", `[["a","b"]]`}},
+		{"append", []string{"--json", "sheets", "append", "id1", "Sheet1!A1:B1", "a|b"}},
+		{"append json", []string{"--json", "sheets", "append", "id1", "Sheet1!A1:B1", "--values-json", `[["a","b"]]`}},
+		{"clear", []string{"--json", "sheets", "clear", "id1", "Sheet1!A1:B1"}},
+		{"metadata", []string{"--json", "sheets", "metadata", "id1"}},
+		{"read-format", []string{"--json", "sheets", "read-format", "id1", "Sheet1!A1:A1"}},
+		{"create", []string{"--json", "sheets", "create", "New", "--sheets", "Income,Expenses"}},
+	}
+	for _, command := range commands {
+		if result := run(command.args...); result.err != nil {
+			t.Fatalf("%s: %v", command.name, result.err)
 		}
-
-		plainOut := captureStdout(t, func() {
-			if err := Execute([]string{"--plain", "sheets", "get", "id1", `Sheet1\\!A1:B1`}); err != nil {
-				t.Fatalf("get plain: %v", err)
-			}
-		})
-		if plainOut != "a\tb\n" {
-			t.Fatalf("unexpected plain out=%q", plainOut)
-		}
-
-		_ = captureStdout(t, func() {
-			if err := Execute([]string{"--json", "sheets", "update", "id1", "Sheet1!A1:B1", "a|b"}); err != nil {
-				t.Fatalf("update: %v", err)
-			}
-		})
-		_ = captureStdout(t, func() {
-			if err := Execute([]string{"--json", "sheets", "update", "id1", "Sheet1!A1:B1", "--values-json", `[["a","b"]]`}); err != nil {
-				t.Fatalf("update json: %v", err)
-			}
-		})
-		_ = captureStdout(t, func() {
-			if err := Execute([]string{"--json", "sheets", "append", "id1", "Sheet1!A1:B1", "a|b"}); err != nil {
-				t.Fatalf("append: %v", err)
-			}
-		})
-		_ = captureStdout(t, func() {
-			if err := Execute([]string{"--json", "sheets", "append", "id1", "Sheet1!A1:B1", "--values-json", `[["a","b"]]`}); err != nil {
-				t.Fatalf("append json: %v", err)
-			}
-		})
-		_ = captureStdout(t, func() {
-			if err := Execute([]string{"--json", "sheets", "clear", "id1", "Sheet1!A1:B1"}); err != nil {
-				t.Fatalf("clear: %v", err)
-			}
-		})
-		_ = captureStdout(t, func() {
-			if err := Execute([]string{"--json", "sheets", "metadata", "id1"}); err != nil {
-				t.Fatalf("metadata: %v", err)
-			}
-		})
-		_ = captureStdout(t, func() {
-			if err := Execute([]string{"--json", "sheets", "create", "New", "--sheets", "Income,Expenses"}); err != nil {
-				t.Fatalf("create: %v", err)
-			}
-		})
-	})
+	}
 }

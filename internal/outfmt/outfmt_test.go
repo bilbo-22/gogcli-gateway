@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"strings"
 	"testing"
 )
 
@@ -81,6 +82,66 @@ func TestWriteJSON_ResultsOnlyAndSelect(t *testing.T) {
 	}
 }
 
+func TestWriteJSON_ResultsOnlyPrefersKnownResultKey(t *testing.T) {
+	ctx := WithJSONTransform(context.Background(), JSONTransform{ResultsOnly: true})
+
+	for range 50 {
+		var buf bytes.Buffer
+		if err := WriteJSON(ctx, &buf, map[string]any{
+			"files":         []map[string]any{{"id": "primary"}},
+			"warnings":      []string{"secondary"},
+			"nextPageToken": "tok",
+		}); err != nil {
+			t.Fatalf("WriteJSON: %v", err)
+		}
+
+		var got []map[string]any
+		if err := json.Unmarshal(buf.Bytes(), &got); err != nil {
+			t.Fatalf("unmarshal: %v (out=%q)", err, buf.String())
+		}
+
+		if len(got) != 1 || got[0]["id"] != "primary" {
+			t.Fatalf("selected wrong result array: %s", strings.TrimSpace(buf.String()))
+		}
+	}
+}
+
+func TestWriteJSON_ResultsOnlyDoesNotPreferScalarKnownKeyOverArray(t *testing.T) {
+	ctx := WithJSONTransform(context.Background(), JSONTransform{ResultsOnly: true})
+
+	var buf bytes.Buffer
+	if err := WriteJSON(ctx, &buf, map[string]any{
+		"notes":        "speaker notes",
+		"textElements": []map[string]any{{"text": "primary"}},
+	}); err != nil {
+		t.Fatalf("WriteJSON: %v", err)
+	}
+
+	var got []map[string]any
+	if err := json.Unmarshal(buf.Bytes(), &got); err != nil {
+		t.Fatalf("unmarshal: %v (out=%q)", err, buf.String())
+	}
+
+	if len(got) != 1 || got[0]["text"] != "primary" {
+		t.Fatalf("selected scalar known key instead of result array: %s", strings.TrimSpace(buf.String()))
+	}
+}
+
+func TestWriteJSONTransformPreservesLargeNumbers(t *testing.T) {
+	ctx := WithJSONTransform(context.Background(), JSONTransform{Select: []string{"id"}})
+
+	var buf bytes.Buffer
+	if err := WriteJSON(ctx, &buf, map[string]any{
+		"id": int64(9007199254740993),
+	}); err != nil {
+		t.Fatalf("WriteJSON: %v", err)
+	}
+
+	if !strings.Contains(buf.String(), "9007199254740993") {
+		t.Fatalf("large integer was not preserved: %s", strings.TrimSpace(buf.String()))
+	}
+}
+
 func TestFromEnvAndParseError(t *testing.T) {
 	t.Setenv("GOG_JSON", "yes")
 	t.Setenv("GOG_PLAIN", "0")
@@ -92,6 +153,16 @@ func TestFromEnvAndParseError(t *testing.T) {
 
 	if err := (&ParseError{msg: "boom"}).Error(); err != "boom" {
 		t.Fatalf("unexpected parse error: %q", err)
+	}
+}
+
+func TestFromEnvJSONWinsOverPlain(t *testing.T) {
+	t.Setenv("GOG_JSON", "1")
+	t.Setenv("GOG_PLAIN", "1")
+
+	mode := FromEnv()
+	if !mode.JSON || mode.Plain {
+		t.Fatalf("unexpected env mode: %#v", mode)
 	}
 }
 

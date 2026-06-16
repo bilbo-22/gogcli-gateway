@@ -7,7 +7,6 @@ import (
 	"io"
 	"net/http"
 	"net/url"
-	"os"
 	"strings"
 	"time"
 
@@ -27,12 +26,12 @@ type GmailTrackOpensCmd struct {
 
 func (c *GmailTrackOpensCmd) Run(ctx context.Context, flags *RootFlags) error {
 	u := ui.FromContext(ctx)
-	_, cfg, err := loadTrackingConfigForAccount(flags)
+	_, cfg, _, _, err := loadTrackingConfigForAccount(ctx, flags)
 	if err != nil {
 		return err
 	}
 	if !cfg.IsConfigured() {
-		return fmt.Errorf("tracking not configured; run 'gog gmail track setup' first")
+		return trackingConfigError("tracking not configured; run 'gog gmail track setup' first")
 	}
 
 	// Query by tracking ID
@@ -73,7 +72,7 @@ func (c *GmailTrackOpensCmd) queryByTrackingID(ctx context.Context, cfg *trackin
 		if err := json.Unmarshal(body, &anyJSON); err != nil {
 			return fmt.Errorf("decode response: %w", err)
 		}
-		return outfmt.WriteJSON(ctx, os.Stdout, anyJSON)
+		return outfmt.WriteJSON(ctx, stdoutWriter(ctx), anyJSON)
 	}
 
 	var result struct {
@@ -96,20 +95,20 @@ func (c *GmailTrackOpensCmd) queryByTrackingID(ctx context.Context, cfg *trackin
 		return fmt.Errorf("decode response: %w", err)
 	}
 
-	u.Out().Printf("tracking_id\t%s", result.TrackingID)
-	u.Out().Printf("recipient\t%s", result.Recipient)
-	u.Out().Printf("sent_at\t%s", result.SentAt)
-	u.Out().Printf("opens_total\t%d", result.TotalOpens)
-	u.Out().Printf("opens_human\t%d", result.HumanOpens)
+	u.Out().Linef("tracking_id\t%s", result.TrackingID)
+	u.Out().Linef("recipient\t%s", result.Recipient)
+	u.Out().Linef("sent_at\t%s", result.SentAt)
+	u.Out().Linef("opens_total\t%d", result.TotalOpens)
+	u.Out().Linef("opens_human\t%d", result.HumanOpens)
 
 	if result.FirstHumanOpen != nil {
-		u.Out().Printf("first_human_open\t%s", result.FirstHumanOpen.At)
+		u.Out().Linef("first_human_open\t%s", result.FirstHumanOpen.At)
 
 		loc := trackingUnknown
 		if result.FirstHumanOpen.Location != nil && result.FirstHumanOpen.Location.City != "" {
 			loc = fmt.Sprintf("%s, %s", result.FirstHumanOpen.Location.City, result.FirstHumanOpen.Location.Region)
 		}
-		u.Out().Printf("first_human_open_location\t%s", loc)
+		u.Out().Linef("first_human_open_location\t%s", loc)
 	}
 
 	return nil
@@ -117,7 +116,7 @@ func (c *GmailTrackOpensCmd) queryByTrackingID(ctx context.Context, cfg *trackin
 
 func (c *GmailTrackOpensCmd) queryAdmin(ctx context.Context, cfg *tracking.Config, u *ui.UI) error {
 	if strings.TrimSpace(cfg.AdminKey) == "" {
-		return fmt.Errorf("tracking admin key not configured; run 'gog gmail track setup' again")
+		return trackingConfigError("tracking admin key not configured; run 'gog gmail track setup' again")
 	}
 
 	reqURL, _ := url.Parse(cfg.WorkerURL + "/opens")
@@ -172,11 +171,11 @@ func (c *GmailTrackOpensCmd) queryAdmin(ctx context.Context, cfg *tracking.Confi
 	}
 
 	if outfmt.IsJSON(ctx) {
-		return outfmt.WriteJSON(ctx, os.Stdout, result)
+		return outfmt.WriteJSON(ctx, stdoutWriter(ctx), result)
 	}
 
 	if len(result.Opens) == 0 {
-		u.Out().Printf("opens\t0")
+		u.Out().Linef("opens\t0")
 		return nil
 	}
 
@@ -185,7 +184,7 @@ func (c *GmailTrackOpensCmd) queryAdmin(ctx context.Context, cfg *tracking.Confi
 		if o.Location != nil && o.Location.City != "" {
 			loc = fmt.Sprintf("%s, %s", o.Location.City, o.Location.Region)
 		}
-		u.Out().Printf("%s\t%s\t%s\t%t\t%s\t%s", o.TrackingID, o.Recipient, o.OpenedAt, o.IsBot, o.SubjectHash, loc)
+		u.Out().Linef("%s\t%s\t%s\t%t\t%s\t%s", o.TrackingID, o.Recipient, o.OpenedAt, o.IsBot, o.SubjectHash, loc)
 	}
 
 	return nil

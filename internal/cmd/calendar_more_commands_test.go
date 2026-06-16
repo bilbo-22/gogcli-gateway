@@ -11,15 +11,9 @@ import (
 
 	"google.golang.org/api/calendar/v3"
 	"google.golang.org/api/option"
-
-	"github.com/steipete/gogcli/internal/outfmt"
-	"github.com/steipete/gogcli/internal/ui"
 )
 
 func TestCalendarMoreCommands_JSON(t *testing.T) {
-	origNew := newCalendarService
-	t.Cleanup(func() { newCalendarService = origNew })
-
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		path := strings.TrimPrefix(r.URL.Path, "/calendar/v3")
 		switch {
@@ -91,43 +85,27 @@ func TestCalendarMoreCommands_JSON(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewService: %v", err)
 	}
-	newCalendarService = func(context.Context, string) (*calendar.Service, error) { return svc, nil }
 
 	flags := &RootFlags{Account: "a@b.com", Force: true}
-	u, uiErr := ui.New(ui.Options{Stdout: io.Discard, Stderr: io.Discard, Color: "never"})
-	if uiErr != nil {
-		t.Fatalf("ui.New: %v", uiErr)
+	ctx := withCalendarTestService(newCmdRuntimeJSONOutputContext(t, io.Discard, io.Discard), svc)
+
+	if err := runKong(t, &CalendarCalendarsCmd{}, []string{}, ctx, flags); err != nil {
+		t.Fatalf("calendars: %v", err)
 	}
-	ctx := ui.WithUI(context.Background(), u)
-	ctx = outfmt.WithMode(ctx, outfmt.Mode{JSON: true})
 
-	_ = captureStdout(t, func() {
-		if err := runKong(t, &CalendarCalendarsCmd{}, []string{}, ctx, flags); err != nil {
-			t.Fatalf("calendars: %v", err)
-		}
-	})
+	if err := runKong(t, &CalendarAclCmd{}, []string{"cal1"}, ctx, flags); err != nil {
+		t.Fatalf("acl: %v", err)
+	}
 
-	_ = captureStdout(t, func() {
-		if err := runKong(t, &CalendarAclCmd{}, []string{"cal1"}, ctx, flags); err != nil {
-			t.Fatalf("acl: %v", err)
-		}
-	})
+	if err := runKong(t, &CalendarEventCmd{}, []string{"cal1", "evt1"}, ctx, flags); err != nil {
+		t.Fatalf("event: %v", err)
+	}
 
-	_ = captureStdout(t, func() {
-		if err := runKong(t, &CalendarEventCmd{}, []string{"cal1", "evt1"}, ctx, flags); err != nil {
-			t.Fatalf("event: %v", err)
-		}
-	})
+	if err := runKong(t, &CalendarCreateCmd{}, []string{"cal1", "--summary", "Created", "--from", "2025-01-01T12:00:00Z", "--to", "2025-01-01T13:00:00Z"}, ctx, flags); err != nil {
+		t.Fatalf("create: %v", err)
+	}
 
-	_ = captureStdout(t, func() {
-		if err := runKong(t, &CalendarCreateCmd{}, []string{"cal1", "--summary", "Created", "--from", "2025-01-01T12:00:00Z", "--to", "2025-01-01T13:00:00Z"}, ctx, flags); err != nil {
-			t.Fatalf("create: %v", err)
-		}
-	})
-
-	_ = captureStdout(t, func() {
-		if err := runKong(t, &CalendarFreeBusyCmd{}, []string{"cal1", "--from", "2025-01-01T00:00:00Z", "--to", "2025-01-02T00:00:00Z"}, ctx, flags); err != nil {
-			t.Fatalf("freebusy: %v", err)
-		}
-	})
+	if err := runKong(t, &CalendarFreeBusyCmd{}, []string{"cal1", "--from", "2025-01-01T00:00:00Z", "--to", "2025-01-02T00:00:00Z"}, ctx, flags); err != nil {
+		t.Fatalf("freebusy: %v", err)
+	}
 }

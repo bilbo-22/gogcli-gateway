@@ -1,15 +1,22 @@
 package googleapi
 
 import (
+	"bytes"
 	"context"
+	cryptorand "crypto/rand"
+	"errors"
 	"fmt"
 	"io"
 	"log/slog"
-	"math/rand/v2"
+	"math/big"
 	"net/http"
 	"strconv"
 	"time"
 )
+
+const maxBufferedReplayBodyBytes = int64(16 << 20)
+
+var errRequestBodyTooLarge = errors.New("request body too large to buffer for retry")
 
 // RetryTransport wraps an http.RoundTripper with retry logic for
 // rate limits (429) and server errors (5xx).
@@ -42,12 +49,12 @@ func (t *RetryTransport) RoundTrip(req *http.Request) (*http.Response, error) {
 		return nil, &CircuitBreakerError{}
 	}
 
-	if err := ensureReplayableBody(req); err != nil {
+	replayable, err := ensureReplayableBody(req)
+	if err != nil {
 		return nil, err
 	}
 
 	var resp *http.Response
-	var err error
 	retries429 := 0
 	retries5xx := 0
 
@@ -81,12 +88,12 @@ func (t *RetryTransport) RoundTrip(req *http.Request) (*http.Response, error) {
 
 		// Rate limit (429)
 		if resp.StatusCode == http.StatusTooManyRequests {
-			if retries429 >= t.MaxRetries429 {
+			if retries429 >= t.MaxRetries429 || !replayable {
 				return resp, nil // Return the 429 response after max retries
 			}
 
 			delay := t.calculateBackoff(retries429, resp)
-			slog.Debug("rate limited, retrying",
+			slog.Debug("rate limited, retrying", //nolint:gosec // logged values are internal retry metadata
 				"delay", delay,
 				"attempt", retries429+1,
 				"max_retries", t.MaxRetries429)
@@ -108,11 +115,11 @@ func (t *RetryTransport) RoundTrip(req *http.Request) (*http.Response, error) {
 				t.CircuitBreaker.RecordFailure()
 			}
 
-			if retries5xx >= t.MaxRetries5xx {
+			if retries5xx >= t.MaxRetries5xx || !replayable {
 				return resp, nil
 			}
 
-			slog.Debug("server error, retrying",
+			slog.Debug("server error, retrying", //nolint:gosec // logged values are internal retry metadata
 				"status", resp.StatusCode,
 				"attempt", retries5xx+1)
 
@@ -170,9 +177,26 @@ func (t *RetryTransport) calculateBackoff(attempt int, resp *http.Response) time
 	if jitterRange <= 0 {
 		return baseDelay
 	}
-	jitter := time.Duration(rand.Int64N(int64(jitterRange))) //nolint:gosec // non-crypto jitter
+
+	jitter, err := randomDurationBelow(jitterRange)
+	if err != nil {
+		return baseDelay
+	}
 
 	return baseDelay + jitter
+}
+
+func randomDurationBelow(upperBound time.Duration) (time.Duration, error) {
+	if upperBound <= 0 {
+		return 0, nil
+	}
+
+	n, err := cryptorand.Int(cryptorand.Reader, big.NewInt(int64(upperBound)))
+	if err != nil {
+		return 0, fmt.Errorf("generate retry jitter: %w", err)
+	}
+
+	return time.Duration(n.Int64()), nil
 }
 
 func (t *RetryTransport) sleep(ctx context.Context, d time.Duration) error {
@@ -191,43 +215,31 @@ func (t *RetryTransport) sleep(ctx context.Context, d time.Duration) error {
 	}
 }
 
-// bytesReader is a simple bytes.Reader replacement to avoid import
-type bytesReader struct {
-	data []byte
-	pos  int
-}
-
-func newBytesReader(data []byte) *bytesReader {
-	return &bytesReader{data: data}
-}
-
-func (r *bytesReader) Read(p []byte) (n int, err error) {
-	if r.pos >= len(r.data) {
-		return 0, io.EOF
-	}
-	n = copy(p, r.data[r.pos:])
-	r.pos += n
-
-	return n, nil
-}
-
-func ensureReplayableBody(req *http.Request) error {
+func ensureReplayableBody(req *http.Request) (bool, error) {
 	if req == nil || req.Body == nil || req.GetBody != nil {
-		return nil
+		return true, nil
 	}
 
-	bodyBytes, err := io.ReadAll(req.Body)
+	if req.ContentLength <= 0 || req.ContentLength > maxBufferedReplayBodyBytes {
+		return false, nil
+	}
+
+	bodyBytes, err := io.ReadAll(io.LimitReader(req.Body, maxBufferedReplayBodyBytes+1))
 	if err != nil {
-		return fmt.Errorf("read request body: %w", err)
+		return false, fmt.Errorf("read request body: %w", err)
+	}
+
+	if int64(len(bodyBytes)) > maxBufferedReplayBodyBytes {
+		return false, fmt.Errorf("%w: %d bytes exceeds %d bytes", errRequestBodyTooLarge, len(bodyBytes), maxBufferedReplayBodyBytes)
 	}
 	_ = req.Body.Close()
 
 	req.GetBody = func() (io.ReadCloser, error) {
-		return io.NopCloser(newBytesReader(bodyBytes)), nil
+		return io.NopCloser(bytes.NewReader(bodyBytes)), nil
 	}
-	req.Body = io.NopCloser(newBytesReader(bodyBytes))
+	req.Body = io.NopCloser(bytes.NewReader(bodyBytes))
 
-	return nil
+	return true, nil
 }
 
 func drainAndClose(body io.ReadCloser) {

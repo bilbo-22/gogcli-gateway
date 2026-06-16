@@ -64,3 +64,48 @@ Shows stored credential files plus any configured domain mappings.
 
 - Legacy `token:<email>` entries are copied to `token:default:<email>` the first time they are read.
 - Legacy `default_account` is still respected for the default client.
+- Browser, manual, remote, and account-manager authorization use S256 PKCE.
+  Manual state includes a short-lived verifier under the active `gog` config
+  directory. Keep the same `GOG_HOME` and `--client` between remote steps.
+- Manual or remote authorization started before v0.24.0 cannot be completed
+  after upgrading. Run step 1 again to generate a PKCE-bound URL.
+
+## Workspace service accounts
+
+Workspace Admin, group, org-unit, and Keep automation commonly run through a
+service-account key with domain-wide delegation. Store the key for the
+Workspace admin identity you want to impersonate:
+
+```
+gog auth service-account set admin@example.com --key ~/Downloads/service-account.json
+gog auth service-account status admin@example.com
+```
+
+Cloud Identity Groups commands use the same Workspace service-account setup.
+Include `https://www.googleapis.com/auth/cloud-identity.groups.readonly` in
+domain-wide delegation, then run:
+
+```bash
+gog --account admin@example.com groups list
+gog --account admin@example.com groups members engineering@example.com
+gog --account admin@example.com calendar team engineering@example.com
+```
+
+Explicit `--access-token` and `GOG_AUTH_MODE=adc` auth remain available for
+advanced environments. `groups list` and Groups backups also require
+`--account <workspace-email>` because their transitive membership searches
+need the Workspace identity; `groups members` can use the active principal
+without that flag. `calendar team` shares the same Groups auth boundary.
+Stored user OAuth tokens are not used for these Cloud Identity lookups.
+
+Then run Admin SDK commands with that account:
+
+```
+gog --account admin@example.com admin users create ada@example.com \
+  --first-name Ada \
+  --last-name Lovelace \
+  --change-password
+```
+
+See [Workspace Admin](workspace-admin.md) for user creation, organizational
+units, cleanup, and group examples.

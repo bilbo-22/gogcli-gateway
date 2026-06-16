@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"os"
 	"strings"
 
 	"github.com/steipete/gogcli/internal/config"
@@ -59,9 +58,11 @@ func exportViaDrive(ctx context.Context, flags *RootFlags, opts exportViaDriveOp
 	}
 	var defaultDownloadsDir string
 	if outPathFlag == "" {
-		if dir, err := config.DriveDownloadsDir(); err == nil {
-			defaultDownloadsDir = dir
+		layout, layoutErr := commandLayout(ctx, config.PathKindConfig)
+		if layoutErr != nil {
+			return layoutErr
 		}
+		defaultDownloadsDir = layout.DriveDownloadsDir()
 	}
 	if err := dryRunExit(ctx, flags, op, map[string]any{
 		"id":                    id,
@@ -74,12 +75,7 @@ func exportViaDrive(ctx context.Context, flags *RootFlags, opts exportViaDriveOp
 		return err
 	}
 
-	account, err := requireAccount(flags)
-	if err != nil {
-		return err
-	}
-
-	svc, err := newDriveService(ctx, account)
+	_, svc, err := requireDriveService(ctx, flags)
 	if err != nil {
 		return err
 	}
@@ -103,9 +99,12 @@ func exportViaDrive(ctx context.Context, flags *RootFlags, opts exportViaDriveOp
 		return fmt.Errorf("file is not a %s (mimeType=%q)", label, meta.MimeType)
 	}
 
-	destPath, err := resolveDriveDownloadDestPath(meta, outPathFlag)
+	destPath, err := resolveDriveDownloadDestPath(meta, outPathFlag, defaultDownloadsDir)
 	if err != nil {
 		return err
+	}
+	if outfmt.IsJSON(ctx) && isStdoutPath(destPath) {
+		return usage("can't combine --json with --out -")
 	}
 
 	downloadedPath, size, err := downloadDriveFile(ctx, svc, meta, destPath, format)
@@ -114,9 +113,12 @@ func exportViaDrive(ctx context.Context, flags *RootFlags, opts exportViaDriveOp
 	}
 
 	if outfmt.IsJSON(ctx) {
-		return outfmt.WriteJSON(ctx, os.Stdout, map[string]any{"path": downloadedPath, "size": size})
+		return outfmt.WriteJSON(ctx, stdoutWriter(ctx), map[string]any{"path": downloadedPath, "size": size})
 	}
-	u.Out().Printf("path\t%s", downloadedPath)
-	u.Out().Printf("size\t%s", formatDriveSize(size))
+	if isStdoutPath(downloadedPath) {
+		return nil
+	}
+	u.Out().Linef("path\t%s", downloadedPath)
+	u.Out().Linef("size\t%s", formatDriveSize(size))
 	return nil
 }

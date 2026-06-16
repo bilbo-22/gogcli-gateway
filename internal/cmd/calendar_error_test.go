@@ -3,6 +3,7 @@ package cmd
 import (
 	"context"
 	"encoding/json"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -27,9 +28,6 @@ func TestCalendarCreateAndFreeBusy_Validation(t *testing.T) {
 }
 
 func TestCalendarUpdate_AllDayRequiresFromTo(t *testing.T) {
-	origNew := newCalendarService
-	t.Cleanup(func() { newCalendarService = origNew })
-
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		path := strings.TrimPrefix(r.URL.Path, "/calendar/v3")
 		if strings.Contains(path, "/calendars/cal1/events/evt1") && r.Method == http.MethodGet {
@@ -53,11 +51,11 @@ func TestCalendarUpdate_AllDayRequiresFromTo(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewService: %v", err)
 	}
-	newCalendarService = func(context.Context, string) (*calendar.Service, error) { return svc, nil }
 
 	flags := &RootFlags{Account: "a@b.com"}
 	cmd := &CalendarUpdateCmd{}
-	if err := runKong(t, cmd, []string{"cal1", "evt1", "--all-day"}, context.Background(), flags); err == nil || !strings.Contains(err.Error(), "when changing --all-day") {
+	ctx := withCalendarTestService(newCmdRuntimeOutputContext(t, io.Discard, io.Discard), svc)
+	if err := runKong(t, cmd, []string{"cal1", "evt1", "--all-day"}, ctx, flags); err == nil || !strings.Contains(err.Error(), "when changing --all-day") {
 		t.Fatalf("expected all-day error, got %v", err)
 	}
 }
@@ -65,7 +63,8 @@ func TestCalendarUpdate_AllDayRequiresFromTo(t *testing.T) {
 func TestCalendarDelete_NoInput(t *testing.T) {
 	flags := &RootFlags{Account: "a@b.com", NoInput: true}
 	cmd := &CalendarDeleteCmd{}
-	if err := runKong(t, cmd, []string{"cal1", "evt1"}, context.Background(), flags); err == nil || !strings.Contains(err.Error(), "refusing") {
+	ctx := withDefaultTestRuntime(context.Background())
+	if err := runKong(t, cmd, []string{"cal1", "evt1"}, ctx, flags); err == nil || !strings.Contains(err.Error(), "refusing") {
 		t.Fatalf("expected refusing error, got %v", err)
 	}
 }

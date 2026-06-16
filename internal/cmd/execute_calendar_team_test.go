@@ -11,16 +11,23 @@ import (
 	"google.golang.org/api/calendar/v3"
 	"google.golang.org/api/cloudidentity/v1"
 	"google.golang.org/api/option"
+
+	"github.com/steipete/gogcli/internal/app"
 )
 
-func TestExecute_CalendarTeam_JSON(t *testing.T) {
-	origCalSvc := newCalendarService
-	origCloudSvc := newCloudIdentityService
-	t.Cleanup(func() {
-		newCalendarService = origCalSvc
-		newCloudIdentityService = origCloudSvc
-	})
+func executeCalendarTeamTest(t *testing.T, args []string, calSvc *calendar.Service, cloudSvc *cloudidentity.Service) executeTestResult {
+	t.Helper()
+	return executeWithTestRuntime(t, args, &app.Runtime{Services: app.Services{
+		Calendar: func(context.Context, string) (*calendar.Service, error) {
+			return calSvc, nil
+		},
+		CloudIdentity: func(context.Context, string) (*cloudidentity.Service, error) {
+			return cloudSvc, nil
+		},
+	}})
+}
 
+func TestExecute_CalendarTeam_JSON(t *testing.T) {
 	// Mock Cloud Identity server
 	cloudSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch {
@@ -57,7 +64,6 @@ func TestExecute_CalendarTeam_JSON(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewService (cloud): %v", err)
 	}
-	newCloudIdentityService = func(context.Context, string) (*cloudidentity.Service, error) { return cloudSvc, nil }
 
 	// Mock Calendar server
 	calSrv := httptest.NewServer(withPrimaryCalendar(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -106,21 +112,18 @@ func TestExecute_CalendarTeam_JSON(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewService (cal): %v", err)
 	}
-	newCalendarService = func(context.Context, string) (*calendar.Service, error) { return calSvc, nil }
 
-	out := captureStdout(t, func() {
-		_ = captureStderr(t, func() {
-			if err := Execute([]string{
-				"--json",
-				"--account", "a@b.com",
-				"calendar", "team", "engineering@example.com",
-				"--from", "2026-01-05T00:00:00Z",
-				"--to", "2026-01-06T00:00:00Z",
-			}); err != nil {
-				t.Fatalf("Execute: %v", err)
-			}
-		})
-	})
+	result := executeCalendarTeamTest(t, []string{
+		"--json",
+		"--account", "a@b.com",
+		"calendar", "team", "engineering@example.com",
+		"--from", "2026-01-05T00:00:00Z",
+		"--to", "2026-01-06T00:00:00Z",
+	}, calSvc, cloudSvc)
+	if result.err != nil {
+		t.Fatalf("Execute: %v", result.err)
+	}
+	out := result.stdout
 
 	var parsed struct {
 		Group    string `json:"group"`
@@ -157,14 +160,29 @@ func TestExecute_CalendarTeam_JSON(t *testing.T) {
 	}
 }
 
-func TestExecute_CalendarTeam_FreeBusy(t *testing.T) {
-	origCalSvc := newCalendarService
-	origCloudSvc := newCloudIdentityService
-	t.Cleanup(func() {
-		newCalendarService = origCalSvc
-		newCloudIdentityService = origCloudSvc
-	})
+func TestExecute_CalendarTeam_WrapsGroupPermissionError(t *testing.T) {
+	cloudSvc := newCloudIdentityTestService(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if strings.Contains(r.URL.Path, "groups:lookup") {
+			writeGroupsPermissionError(t, w)
+			return
+		}
+		http.NotFound(w, r)
+	}))
+	calSvc, closeCal := newCalendarServiceForTest(t, withPrimaryCalendar(http.NotFoundHandler()))
+	t.Cleanup(closeCal)
 
+	result := executeCalendarTeamTest(t, []string{
+		"--account", "admin@example.com", "calendar", "team", "engineering@example.com",
+	}, calSvc, cloudSvc)
+	if result.err == nil || ExitCode(result.err) != exitCodePermissionDenied {
+		t.Fatalf("unexpected error: %v\nstderr=%q", result.err, result.stderr)
+	}
+	if !strings.Contains(result.stderr, "gog auth service-account set admin@example.com") {
+		t.Fatalf("unexpected stderr: %q", result.stderr)
+	}
+}
+
+func TestExecute_CalendarTeam_FreeBusy(t *testing.T) {
 	// Mock Cloud Identity server
 	cloudSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch {
@@ -189,8 +207,6 @@ func TestExecute_CalendarTeam_FreeBusy(t *testing.T) {
 		option.WithHTTPClient(cloudSrv.Client()),
 		option.WithEndpoint(cloudSrv.URL+"/"),
 	)
-	newCloudIdentityService = func(context.Context, string) (*cloudidentity.Service, error) { return cloudSvc, nil }
-
 	// Mock Calendar server
 	calSrv := httptest.NewServer(withPrimaryCalendar(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if strings.Contains(r.URL.Path, "freeBusy") {
@@ -215,22 +231,18 @@ func TestExecute_CalendarTeam_FreeBusy(t *testing.T) {
 		option.WithHTTPClient(calSrv.Client()),
 		option.WithEndpoint(calSrv.URL+"/"),
 	)
-	newCalendarService = func(context.Context, string) (*calendar.Service, error) { return calSvc, nil }
-
-	out := captureStdout(t, func() {
-		_ = captureStderr(t, func() {
-			if err := Execute([]string{
-				"--json",
-				"--account", "a@b.com",
-				"calendar", "team", "eng@example.com",
-				"--freebusy",
-				"--from", "2026-01-05T00:00:00Z",
-				"--to", "2026-01-06T00:00:00Z",
-			}); err != nil {
-				t.Fatalf("Execute: %v", err)
-			}
-		})
-	})
+	result := executeCalendarTeamTest(t, []string{
+		"--json",
+		"--account", "a@b.com",
+		"calendar", "team", "eng@example.com",
+		"--freebusy",
+		"--from", "2026-01-05T00:00:00Z",
+		"--to", "2026-01-06T00:00:00Z",
+	}, calSvc, cloudSvc)
+	if result.err != nil {
+		t.Fatalf("Execute: %v", result.err)
+	}
+	out := result.stdout
 
 	var parsed struct {
 		FreeBusy []struct {
@@ -254,13 +266,6 @@ func TestExecute_CalendarTeam_FreeBusy(t *testing.T) {
 }
 
 func TestExecute_CalendarTeam_Text(t *testing.T) {
-	origCalSvc := newCalendarService
-	origCloudSvc := newCloudIdentityService
-	t.Cleanup(func() {
-		newCalendarService = origCalSvc
-		newCloudIdentityService = origCloudSvc
-	})
-
 	// Mock Cloud Identity server
 	cloudSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch {
@@ -285,8 +290,6 @@ func TestExecute_CalendarTeam_Text(t *testing.T) {
 		option.WithHTTPClient(cloudSrv.Client()),
 		option.WithEndpoint(cloudSrv.URL+"/"),
 	)
-	newCloudIdentityService = func(context.Context, string) (*cloudidentity.Service, error) { return cloudSvc, nil }
-
 	// Mock Calendar server
 	calSrv := httptest.NewServer(withPrimaryCalendar(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if strings.Contains(r.URL.Path, "/calendars/alice@example.com/events") {
@@ -312,20 +315,16 @@ func TestExecute_CalendarTeam_Text(t *testing.T) {
 		option.WithHTTPClient(calSrv.Client()),
 		option.WithEndpoint(calSrv.URL+"/"),
 	)
-	newCalendarService = func(context.Context, string) (*calendar.Service, error) { return calSvc, nil }
-
-	out := captureStdout(t, func() {
-		_ = captureStderr(t, func() {
-			if err := Execute([]string{
-				"--account", "a@b.com",
-				"calendar", "team", "eng@example.com",
-				"--from", "2026-01-05T00:00:00Z",
-				"--to", "2026-01-06T00:00:00Z",
-			}); err != nil {
-				t.Fatalf("Execute: %v", err)
-			}
-		})
-	})
+	result := executeCalendarTeamTest(t, []string{
+		"--account", "a@b.com",
+		"calendar", "team", "eng@example.com",
+		"--from", "2026-01-05T00:00:00Z",
+		"--to", "2026-01-06T00:00:00Z",
+	}, calSvc, cloudSvc)
+	if result.err != nil {
+		t.Fatalf("Execute: %v", result.err)
+	}
+	out := result.stdout
 
 	// Check text output format
 	if !strings.Contains(out, "WHO") || !strings.Contains(out, "START") || !strings.Contains(out, "SUMMARY") {

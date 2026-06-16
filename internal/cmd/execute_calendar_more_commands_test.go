@@ -13,9 +13,6 @@ import (
 )
 
 func TestExecute_CalendarMoreCommands_JSON(t *testing.T) {
-	origNew := newCalendarService
-	t.Cleanup(func() { newCalendarService = origNew })
-
 	const calendarID = "c1@example.com"
 	const eventID = "e1"
 
@@ -90,43 +87,23 @@ func TestExecute_CalendarMoreCommands_JSON(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewService: %v", err)
 	}
-	newCalendarService = func(context.Context, string) (*calendar.Service, error) { return svc, nil }
 
-	_ = captureStderr(t, func() {
-		_ = captureStdout(t, func() {
-			if err := Execute([]string{"--json", "--account", "a@b.com", "calendar", "acl", calendarID}); err != nil {
-				t.Fatalf("acl: %v", err)
-			}
-		})
-		_ = captureStdout(t, func() {
-			if err := Execute([]string{"--json", "--account", "a@b.com", "calendar", "events", calendarID, "--from", "2025-12-17T00:00:00Z", "--to", "2025-12-18T00:00:00Z", "--query", "hello"}); err != nil {
-				t.Fatalf("events: %v", err)
-			}
-		})
-		_ = captureStdout(t, func() {
-			if err := Execute([]string{"--json", "--account", "a@b.com", "calendar", "event", calendarID, eventID}); err != nil {
-				t.Fatalf("event: %v", err)
-			}
-		})
-		_ = captureStdout(t, func() {
-			if err := Execute([]string{"--json", "--account", "a@b.com", "calendar", "create", calendarID, "--summary", "S", "--from", "2025-12-17T10:00:00Z", "--to", "2025-12-17T11:00:00Z"}); err != nil {
-				t.Fatalf("create: %v", err)
-			}
-		})
-		_ = captureStdout(t, func() {
-			if err := Execute([]string{"--json", "--account", "a@b.com", "calendar", "update", calendarID, eventID, "--summary", "S2"}); err != nil {
-				t.Fatalf("update: %v", err)
-			}
-		})
-		_ = captureStdout(t, func() {
-			if err := Execute([]string{"--json", "--force", "--account", "a@b.com", "calendar", "delete", calendarID, eventID}); err != nil {
-				t.Fatalf("delete: %v", err)
-			}
-		})
-		_ = captureStdout(t, func() {
-			if err := Execute([]string{"--json", "--account", "a@b.com", "calendar", "freebusy", "c1", "--from", "2025-12-17T00:00:00Z", "--to", "2025-12-18T00:00:00Z"}); err != nil {
-				t.Fatalf("freebusy: %v", err)
-			}
-		})
-	})
+	commands := []struct {
+		name string
+		args []string
+	}{
+		{name: "acl", args: []string{"--json", "--account", "a@b.com", "calendar", "acl", calendarID}},
+		{name: "events", args: []string{"--json", "--account", "a@b.com", "calendar", "events", calendarID, "--from", "2025-12-17T00:00:00Z", "--to", "2025-12-18T00:00:00Z", "--query", "hello"}},
+		{name: "event", args: []string{"--json", "--account", "a@b.com", "calendar", "event", calendarID, eventID}},
+		{name: "create", args: []string{"--json", "--account", "a@b.com", "calendar", "create", calendarID, "--summary", "S", "--from", "2025-12-17T10:00:00Z", "--to", "2025-12-17T11:00:00Z"}},
+		{name: "update", args: []string{"--json", "--account", "a@b.com", "calendar", "update", calendarID, eventID, "--summary", "S2"}},
+		{name: "delete", args: []string{"--json", "--force", "--account", "a@b.com", "calendar", "delete", calendarID, eventID}},
+		{name: "freebusy", args: []string{"--json", "--account", "a@b.com", "calendar", "freebusy", "c1", "--from", "2025-12-17T00:00:00Z", "--to", "2025-12-18T00:00:00Z"}},
+	}
+	for _, command := range commands {
+		result := executeWithCalendarTestService(t, command.args, svc)
+		if result.err != nil {
+			t.Fatalf("%s: %v", command.name, result.err)
+		}
+	}
 }

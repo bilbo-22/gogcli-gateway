@@ -13,9 +13,6 @@ import (
 )
 
 func TestDriveCommentsGetUpdateDeleteReply(t *testing.T) {
-	origNew := newDriveService
-	t.Cleanup(func() { newDriveService = origNew })
-
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		path := strings.TrimPrefix(r.URL.Path, "/drive/v3")
 		switch {
@@ -99,145 +96,108 @@ func TestDriveCommentsGetUpdateDeleteReply(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewService: %v", err)
 	}
-	newDriveService = func(context.Context, string) (*drive.Service, error) { return svc, nil }
 
-	getOut := captureStdout(t, func() {
-		_ = captureStderr(t, func() {
-			if err := Execute([]string{"--json", "--account", "a@b.com", "drive", "comments", "get", "file1", "c1"}); err != nil {
-				t.Fatalf("Execute get: %v", err)
-			}
-		})
-	})
-	if !strings.Contains(getOut, "\"content\":") {
-		t.Fatalf("unexpected get output: %q", getOut)
+	getResult := executeWithDriveTestService(t, []string{"--json", "--account", "a@b.com", "drive", "comments", "get", "file1", "c1"}, svc)
+	if getResult.err != nil {
+		t.Fatalf("Execute get: %v", getResult.err)
+	}
+	if !strings.Contains(getResult.stdout, "\"content\":") {
+		t.Fatalf("unexpected get output: %q", getResult.stdout)
 	}
 
-	plainGetOut := captureStdout(t, func() {
-		_ = captureStderr(t, func() {
-			if err := Execute([]string{"--account", "a@b.com", "drive", "comments", "get", "file1", "c1"}); err != nil {
-				t.Fatalf("Execute get plain: %v", err)
-			}
-		})
-	})
-	if !strings.Contains(plainGetOut, "content") {
-		t.Fatalf("unexpected get plain output: %q", plainGetOut)
+	plainGetResult := executeWithDriveTestService(t, []string{"--account", "a@b.com", "drive", "comments", "get", "file1", "c1"}, svc)
+	if plainGetResult.err != nil {
+		t.Fatalf("Execute get plain: %v", plainGetResult.err)
+	}
+	if !strings.Contains(plainGetResult.stdout, "content") {
+		t.Fatalf("unexpected get plain output: %q", plainGetResult.stdout)
 	}
 
-	listOut := captureStdout(t, func() {
-		_ = captureStderr(t, func() {
-			if err := Execute([]string{"--json", "--account", "a@b.com", "drive", "comments", "list", "file1"}); err != nil {
-				t.Fatalf("Execute list: %v", err)
-			}
-		})
-	})
-	if !strings.Contains(listOut, "\"comments\"") {
-		t.Fatalf("unexpected list output: %q", listOut)
+	listResult := executeWithDriveTestService(t, []string{"--json", "--account", "a@b.com", "drive", "comments", "list", "file1"}, svc)
+	if listResult.err != nil {
+		t.Fatalf("Execute list: %v", listResult.err)
+	}
+	if !strings.Contains(listResult.stdout, "\"comments\"") {
+		t.Fatalf("unexpected list output: %q", listResult.stdout)
 	}
 
-	plainListOut := captureStdout(t, func() {
-		_ = captureStderr(t, func() {
-			if err := Execute([]string{"--account", "a@b.com", "drive", "comments", "list", "file1", "--include-quoted"}); err != nil {
-				t.Fatalf("Execute list plain: %v", err)
-			}
-		})
-	})
-	if !strings.Contains(plainListOut, "quoted") {
-		t.Fatalf("unexpected plain list output: %q", plainListOut)
+	plainListResult := executeWithDriveTestService(t, []string{"--account", "a@b.com", "drive", "comments", "list", "file1", "--include-quoted"}, svc)
+	if plainListResult.err != nil {
+		t.Fatalf("Execute list plain: %v", plainListResult.err)
+	}
+	if !strings.Contains(plainListResult.stdout, "quoted") {
+		t.Fatalf("unexpected plain list output: %q", plainListResult.stdout)
 	}
 
-	createOut := captureStdout(t, func() {
-		_ = captureStderr(t, func() {
-			if err := Execute([]string{"--json", "--account", "a@b.com", "drive", "comments", "create", "file1", "new comment", "--quoted", "quote"}); err != nil {
-				t.Fatalf("Execute create: %v", err)
-			}
-		})
-	})
-	if !strings.Contains(createOut, "new comment") {
-		t.Fatalf("unexpected create output: %q", createOut)
+	createResult := executeWithDriveTestService(t, []string{"--json", "--account", "a@b.com", "drive", "comments", "create", "file1", "new comment", "--quoted", "quote"}, svc)
+	if createResult.err != nil {
+		t.Fatalf("Execute create: %v", createResult.err)
+	}
+	if !strings.Contains(createResult.stdout, "new comment") {
+		t.Fatalf("unexpected create output: %q", createResult.stdout)
 	}
 
-	plainCreateOut := captureStdout(t, func() {
-		_ = captureStderr(t, func() {
-			if err := Execute([]string{"--account", "a@b.com", "drive", "comments", "create", "file1", "plain comment"}); err != nil {
-				t.Fatalf("Execute create plain: %v", err)
-			}
-		})
-	})
-	if !strings.Contains(plainCreateOut, "content") {
-		t.Fatalf("unexpected create plain output: %q", plainCreateOut)
+	plainCreateResult := executeWithDriveTestService(t, []string{"--account", "a@b.com", "drive", "comments", "create", "file1", "plain comment"}, svc)
+	if plainCreateResult.err != nil {
+		t.Fatalf("Execute create plain: %v", plainCreateResult.err)
+	}
+	if !strings.Contains(plainCreateResult.stdout, "content") {
+		t.Fatalf("unexpected create plain output: %q", plainCreateResult.stdout)
 	}
 
-	updateOut := captureStdout(t, func() {
-		_ = captureStderr(t, func() {
-			if err := Execute([]string{"--json", "--account", "a@b.com", "drive", "comments", "update", "file1", "c1", "updated"}); err != nil {
-				t.Fatalf("Execute update: %v", err)
-			}
-		})
-	})
-	if !strings.Contains(updateOut, "updated") {
-		t.Fatalf("unexpected update output: %q", updateOut)
+	updateResult := executeWithDriveTestService(t, []string{"--json", "--account", "a@b.com", "drive", "comments", "update", "file1", "c1", "updated"}, svc)
+	if updateResult.err != nil {
+		t.Fatalf("Execute update: %v", updateResult.err)
+	}
+	if !strings.Contains(updateResult.stdout, "updated") {
+		t.Fatalf("unexpected update output: %q", updateResult.stdout)
 	}
 
-	plainUpdateOut := captureStdout(t, func() {
-		_ = captureStderr(t, func() {
-			if err := Execute([]string{"--account", "a@b.com", "drive", "comments", "update", "file1", "c1", "updated"}); err != nil {
-				t.Fatalf("Execute update plain: %v", err)
-			}
-		})
-	})
-	if !strings.Contains(plainUpdateOut, "updated") {
-		t.Fatalf("unexpected update plain output: %q", plainUpdateOut)
+	plainUpdateResult := executeWithDriveTestService(t, []string{"--account", "a@b.com", "drive", "comments", "update", "file1", "c1", "updated"}, svc)
+	if plainUpdateResult.err != nil {
+		t.Fatalf("Execute update plain: %v", plainUpdateResult.err)
+	}
+	if !strings.Contains(plainUpdateResult.stdout, "updated") {
+		t.Fatalf("unexpected update plain output: %q", plainUpdateResult.stdout)
 	}
 
-	deleteOut := captureStdout(t, func() {
-		_ = captureStderr(t, func() {
-			if err := Execute([]string{"--json", "--force", "--account", "a@b.com", "drive", "comments", "delete", "file1", "c1"}); err != nil {
-				t.Fatalf("Execute delete: %v", err)
-			}
-		})
-	})
+	deleteResult := executeWithDriveTestService(t, []string{"--json", "--force", "--account", "a@b.com", "drive", "comments", "delete", "file1", "c1"}, svc)
+	if deleteResult.err != nil {
+		t.Fatalf("Execute delete: %v", deleteResult.err)
+	}
 	var deleted struct {
 		Deleted   bool   `json:"deleted"`
 		FileID    string `json:"fileId"`
 		CommentID string `json:"commentId"`
 	}
-	if err := json.Unmarshal([]byte(deleteOut), &deleted); err != nil {
+	if err := json.Unmarshal([]byte(deleteResult.stdout), &deleted); err != nil {
 		t.Fatalf("delete json parse: %v", err)
 	}
 	if !deleted.Deleted || deleted.FileID != "file1" || deleted.CommentID != "c1" {
 		t.Fatalf("unexpected delete output: %#v", deleted)
 	}
 
-	plainDeleteOut := captureStdout(t, func() {
-		_ = captureStderr(t, func() {
-			if err := Execute([]string{"--force", "--account", "a@b.com", "drive", "comments", "delete", "file1", "c1"}); err != nil {
-				t.Fatalf("Execute delete plain: %v", err)
-			}
-		})
-	})
-	if !strings.Contains(plainDeleteOut, "deleted") {
-		t.Fatalf("unexpected delete plain output: %q", plainDeleteOut)
+	plainDeleteResult := executeWithDriveTestService(t, []string{"--force", "--account", "a@b.com", "drive", "comments", "delete", "file1", "c1"}, svc)
+	if plainDeleteResult.err != nil {
+		t.Fatalf("Execute delete plain: %v", plainDeleteResult.err)
+	}
+	if !strings.Contains(plainDeleteResult.stdout, "deleted") {
+		t.Fatalf("unexpected delete plain output: %q", plainDeleteResult.stdout)
 	}
 
-	replyOut := captureStdout(t, func() {
-		_ = captureStderr(t, func() {
-			if err := Execute([]string{"--json", "--account", "a@b.com", "drive", "comments", "reply", "file1", "c1", "reply"}); err != nil {
-				t.Fatalf("Execute reply: %v", err)
-			}
-		})
-	})
-	if !strings.Contains(replyOut, "reply") {
-		t.Fatalf("unexpected reply output: %q", replyOut)
+	replyResult := executeWithDriveTestService(t, []string{"--json", "--account", "a@b.com", "drive", "comments", "reply", "file1", "c1", "reply"}, svc)
+	if replyResult.err != nil {
+		t.Fatalf("Execute reply: %v", replyResult.err)
+	}
+	if !strings.Contains(replyResult.stdout, "reply") {
+		t.Fatalf("unexpected reply output: %q", replyResult.stdout)
 	}
 
-	plainReplyOut := captureStdout(t, func() {
-		_ = captureStderr(t, func() {
-			if err := Execute([]string{"--account", "a@b.com", "drive", "comments", "reply", "file1", "c1", "reply"}); err != nil {
-				t.Fatalf("Execute reply plain: %v", err)
-			}
-		})
-	})
-	if !strings.Contains(plainReplyOut, "reply") {
-		t.Fatalf("unexpected reply plain output: %q", plainReplyOut)
+	plainReplyResult := executeWithDriveTestService(t, []string{"--account", "a@b.com", "drive", "comments", "reply", "file1", "c1", "reply"}, svc)
+	if plainReplyResult.err != nil {
+		t.Fatalf("Execute reply plain: %v", plainReplyResult.err)
+	}
+	if !strings.Contains(plainReplyResult.stdout, "reply") {
+		t.Fatalf("unexpected reply plain output: %q", plainReplyResult.stdout)
 	}
 }

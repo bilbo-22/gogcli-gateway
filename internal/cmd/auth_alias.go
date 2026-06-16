@@ -3,11 +3,9 @@ package cmd
 import (
 	"context"
 	"fmt"
-	"os"
 	"sort"
 	"strings"
 
-	"github.com/steipete/gogcli/internal/config"
 	"github.com/steipete/gogcli/internal/outfmt"
 	"github.com/steipete/gogcli/internal/ui"
 )
@@ -22,12 +20,16 @@ type AuthAliasListCmd struct{}
 
 func (c *AuthAliasListCmd) Run(ctx context.Context) error {
 	u := ui.FromContext(ctx)
-	aliases, err := config.ListAccountAliases()
+	store, err := commandConfigStore(ctx)
+	if err != nil {
+		return err
+	}
+	aliases, err := store.ListAccountAliases()
 	if err != nil {
 		return err
 	}
 	if outfmt.IsJSON(ctx) {
-		return outfmt.WriteJSON(ctx, os.Stdout, map[string]any{"aliases": aliases})
+		return outfmt.WriteJSON(ctx, stdoutWriter(ctx), map[string]any{"aliases": aliases})
 	}
 	if len(aliases) == 0 {
 		u.Err().Println("No account aliases")
@@ -74,17 +76,21 @@ func (c *AuthAliasSetCmd) Run(ctx context.Context, flags *RootFlags) error {
 	}); err != nil {
 		return err
 	}
-	if err := config.SetAccountAlias(alias, email); err != nil {
+	store, err := commandConfigStore(ctx)
+	if err != nil {
+		return err
+	}
+	if err := store.SetAccountAlias(alias, email); err != nil {
 		return err
 	}
 	if outfmt.IsJSON(ctx) {
-		return outfmt.WriteJSON(ctx, os.Stdout, map[string]any{
+		return outfmt.WriteJSON(ctx, stdoutWriter(ctx), map[string]any{
 			"alias": alias,
 			"email": strings.ToLower(email),
 		})
 	}
-	u.Out().Printf("alias\t%s", alias)
-	u.Out().Printf("email\t%s", strings.ToLower(email))
+	u.Out().Linef("alias\t%s", alias)
+	u.Out().Linef("email\t%s", strings.ToLower(email))
 	return nil
 }
 
@@ -103,7 +109,11 @@ func (c *AuthAliasUnsetCmd) Run(ctx context.Context, flags *RootFlags) error {
 	}); err != nil {
 		return err
 	}
-	deleted, err := config.DeleteAccountAlias(alias)
+	store, err := commandConfigStore(ctx)
+	if err != nil {
+		return err
+	}
+	deleted, err := store.DeleteAccountAlias(alias)
 	if err != nil {
 		return err
 	}

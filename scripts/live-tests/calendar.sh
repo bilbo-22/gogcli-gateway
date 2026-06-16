@@ -2,6 +2,40 @@
 
 set -euo pipefail
 
+run_calendar_conflicts_test() {
+  local calendar_count="$1"
+  local start="$2"
+  local end="$3"
+
+  if [ "$calendar_count" -ge 2 ]; then
+    run_required "calendar" "calendar conflicts" \
+      gog calendar conflicts --from "$start" --to "$end" --json >/dev/null
+    return 0
+  fi
+
+  local stdout_file stderr_file exit_code
+  stdout_file="$LIVE_TMP/calendar-conflicts-single.stdout"
+  stderr_file="$LIVE_TMP/calendar-conflicts-single.stderr"
+  echo "==> calendar conflicts (single-calendar validation)"
+  if gog calendar conflicts --from "$start" --to "$end" --json \
+    >"$stdout_file" 2>"$stderr_file"; then
+    echo "Expected single-calendar conflict detection to fail, but it succeeded" >&2
+    return 1
+  else
+    exit_code=$?
+  fi
+  if [ "$exit_code" -ne 2 ]; then
+    cat "$stderr_file" >&2
+    echo "Expected single-calendar conflict detection to exit 2, got $exit_code" >&2
+    return 1
+  fi
+  [ ! -s "$stdout_file" ] || {
+    echo "Single-calendar conflict validation wrote to stdout" >&2
+    return 1
+  }
+  grep -q "requires at least two calendars" "$stderr_file"
+}
+
 run_calendar_tests() {
   if skip "calendar"; then
     echo "==> calendar (skipped)"
@@ -17,7 +51,10 @@ print(start.strftime('%Y-%m-%dT%H:%M:%SZ'), end.strftime('%Y-%m-%dT%H:%M:%SZ'), 
 PY
 )"
 
-  run_required "calendar" "calendar list" gog calendar calendars --json --max 1 >/dev/null
+  local calendars_json calendar_count
+  echo "==> calendar list"
+  calendars_json=$(gog calendar calendars --json --max 100)
+  calendar_count=$("$PY" -c 'import json,sys; print(len(json.load(sys.stdin).get("calendars", [])))' <<<"$calendars_json")
   run_required "calendar" "calendar acl" gog calendar acl primary --json --max 1 >/dev/null
   run_required "calendar" "calendar colors" gog calendar colors --json >/dev/null
   run_required "calendar" "calendar time" gog calendar time --json >/dev/null
@@ -26,14 +63,33 @@ PY
   ev_json=$(gog calendar create primary --summary "gogcli-smoke-$TS" --from "$START" --to "$END" --location "Test" --send-updates none --json)
   ev_id=$(extract_id "$ev_json")
   [ -n "$ev_id" ] || { echo "Failed to parse calendar event id" >&2; exit 1; }
+  register_calendar_cleanup primary "$ev_id"
 
   run_required "calendar" "calendar event get" gog calendar event primary "$ev_id" --json >/dev/null
   run_required "calendar" "calendar propose-time" gog calendar propose-time primary "$ev_id" --json >/dev/null
   run_required "calendar" "calendar update" gog calendar update primary "$ev_id" --summary "gogcli-smoke-updated-$TS" --json >/dev/null
+
+  local attachment_doc_json attachment_doc_id attachment_url attachment_event_json
+  attachment_doc_json=$(gog docs create "gogcli-calendar-attachment-$TS" --json)
+  attachment_doc_id=$(extract_id "$attachment_doc_json")
+  [ -n "$attachment_doc_id" ] || { echo "Failed to parse calendar attachment doc id" >&2; exit 1; }
+  register_drive_cleanup "$attachment_doc_id"
+  attachment_url="https://drive.google.com/file/d/$attachment_doc_id/view"
+  run_required "calendar" "calendar update attachment" gog calendar update primary "$ev_id" \
+    --attachment "$attachment_url" --json >/dev/null
+  attachment_event_json=$(gog calendar event primary "$ev_id" --json)
+  "$PY" -c 'import json,sys
+want=sys.argv[1]
+obj=json.load(sys.stdin)
+attachments=obj.get("event", {}).get("attachments", [])
+assert any(a.get("fileUrl") == want for a in attachments)' "$attachment_url" <<<"$attachment_event_json"
+  run_required "calendar" "calendar clear attachments" gog calendar update primary "$ev_id" \
+    --attachment= --json >/dev/null
+
   run_required "calendar" "calendar events list" gog calendar events primary --from "$START" --to "$END" --json --max 5 >/dev/null
   run_required "calendar" "calendar search" gog calendar search "gogcli-smoke" --from "$START" --to "$END" --json --max 5 >/dev/null
   run_required "calendar" "calendar freebusy" gog calendar freebusy primary --from "$START" --to "$END" --json >/dev/null
-  run_required "calendar" "calendar conflicts" gog calendar conflicts --from "$START" --to "$END" --json >/dev/null
+  run_calendar_conflicts_test "$calendar_count" "$START" "$END"
 
   if [ -n "${GOG_LIVE_CALENDAR_RESPOND:-}" ]; then
     run_optional "calendar-respond" "calendar respond" gog calendar respond primary "$ev_id" --status accepted --json >/dev/null
@@ -43,7 +99,9 @@ PY
 
   run_required "calendar" "calendar delete event" gog calendar delete primary "$ev_id" --force >/dev/null
 
-  if ! skip "calendar-enterprise"; then
+  if is_consumer_account "$ACCOUNT"; then
+    echo "==> calendar enterprise event types (skipped; Workspace/enterprise only)"
+  elif ! skip "calendar-enterprise"; then
     local focus_json focus_id ooo_json ooo_id wl_json wl_id
     focus_json=$(gog calendar create primary --event-type focus-time --from "$START" --to "$END" --json 2>/dev/null || true)
     if [ -n "$focus_json" ]; then

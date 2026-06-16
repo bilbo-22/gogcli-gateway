@@ -26,7 +26,7 @@ func normalizeTaskDue(value string) (string, error) {
 	}
 	parsed, hasTime, err := parseTaskDate(value)
 	if err != nil {
-		return "", err
+		return "", newUsageError(err)
 	}
 	return formatTaskDue(parsed, hasTime), nil
 }

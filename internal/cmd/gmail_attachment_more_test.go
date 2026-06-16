@@ -215,70 +215,82 @@ func TestSanitizeAttachmentFilename(t *testing.T) {
 
 func TestResolveAttachmentOutputPath(t *testing.T) {
 	t.Run("explicit file path", func(t *testing.T) {
-		dest, err := resolveAttachmentDest("m1", "a1", "/tmp/out.bin", "", false)
+		dest, err := resolveAttachmentDest("m1", "a1", "/tmp/out.bin", "", "")
 		if err != nil {
 			t.Fatalf("unexpected error: %v", err)
 		}
-		if dest.Path != "/tmp/out.bin" {
-			t.Fatalf("got %q, want /tmp/out.bin", dest.Path)
+		if dest != "/tmp/out.bin" {
+			t.Fatalf("got %q, want /tmp/out.bin", dest)
 		}
 	})
 
 	t.Run("directory target appends filename", func(t *testing.T) {
 		dir := t.TempDir()
-		dest, err := resolveAttachmentDest("m1", "abcdefghij", dir, "", false)
+		dest, err := resolveAttachmentDest("m1", "abcdefghij", dir, "", "")
 		if err != nil {
 			t.Fatalf("unexpected error: %v", err)
 		}
 		want := filepath.Join(dir, "m1_abcdefgh_attachment.bin")
-		if dest.Path != want {
-			t.Fatalf("got %q, want %q", dest.Path, want)
+		if dest != want {
+			t.Fatalf("got %q, want %q", dest, want)
 		}
 	})
 
 	t.Run("directory target with custom name", func(t *testing.T) {
 		dir := t.TempDir()
-		dest, err := resolveAttachmentDest("m1", "abcdefghij", dir, "report.pdf", false)
+		dest, err := resolveAttachmentDest("m1", "abcdefghij", dir, "report.pdf", "")
 		if err != nil {
 			t.Fatalf("unexpected error: %v", err)
 		}
 		want := filepath.Join(dir, "report.pdf")
-		if dest.Path != want {
-			t.Fatalf("got %q, want %q", dest.Path, want)
+		if dest != want {
+			t.Fatalf("got %q, want %q", dest, want)
 		}
 	})
 
 	t.Run("traversal in name is stripped", func(t *testing.T) {
 		dir := t.TempDir()
-		dest, err := resolveAttachmentDest("m1", "abcdefghij", dir, "../../etc/passwd", false)
+		dest, err := resolveAttachmentDest("m1", "abcdefghij", dir, "../../etc/passwd", "")
 		if err != nil {
 			t.Fatalf("unexpected error: %v", err)
 		}
 		want := filepath.Join(dir, "passwd")
-		if dest.Path != want {
-			t.Fatalf("got %q, want %q", dest.Path, want)
+		if dest != want {
+			t.Fatalf("got %q, want %q", dest, want)
 		}
 	})
 
 	t.Run("trailing separator treated as directory", func(t *testing.T) {
-		dest, err := resolveAttachmentDest("m1", "abcdefghij", "/tmp/newdir/", "report.pdf", false)
+		dest, err := resolveAttachmentDest("m1", "abcdefghij", "/tmp/newdir/", "report.pdf", "")
 		if err != nil {
 			t.Fatalf("unexpected error: %v", err)
 		}
 		want := filepath.Join("/tmp/newdir", "report.pdf")
-		if dest.Path != want {
-			t.Fatalf("got %q, want %q", dest.Path, want)
+		if dest != want {
+			t.Fatalf("got %q, want %q", dest, want)
 		}
 	})
 
 	t.Run("trailing separator with no name uses stable default", func(t *testing.T) {
-		dest, err := resolveAttachmentDest("m1", "abcdefghij", "/tmp/newdir/", "", false)
+		dest, err := resolveAttachmentDest("m1", "abcdefghij", "/tmp/newdir/", "", "")
 		if err != nil {
 			t.Fatalf("unexpected error: %v", err)
 		}
 		want := filepath.Join("/tmp/newdir", "m1_abcdefgh_attachment.bin")
-		if dest.Path != want {
-			t.Fatalf("got %q, want %q", dest.Path, want)
+		if dest != want {
+			t.Fatalf("got %q, want %q", dest, want)
+		}
+	})
+
+	t.Run("default directory is explicit", func(t *testing.T) {
+		dir := t.TempDir()
+		dest, err := resolveAttachmentDest("m1", "abcdefghij", "", "report.pdf", dir)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		want := filepath.Join(dir, "m1_abcdefgh_report.pdf")
+		if dest != want {
+			t.Fatalf("got %q, want %q", dest, want)
 		}
 	})
 }

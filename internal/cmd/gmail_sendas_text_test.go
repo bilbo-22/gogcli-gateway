@@ -1,27 +1,14 @@
 package cmd
 
 import (
-	"bytes"
-	"context"
 	"encoding/json"
-	"io"
 	"net/http"
 	"net/http/httptest"
-	"os"
 	"strings"
 	"testing"
-
-	"google.golang.org/api/gmail/v1"
-	"google.golang.org/api/option"
-
-	"github.com/steipete/gogcli/internal/outfmt"
-	"github.com/steipete/gogcli/internal/ui"
 )
 
 func TestGmailSendAsListCmd_Text(t *testing.T) {
-	origNew := newGmailService
-	t.Cleanup(func() { newGmailService = origNew })
-
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if strings.Contains(r.URL.Path, "/settings/sendAs") && r.Method == http.MethodGet {
 			w.Header().Set("Content-Type", "application/json")
@@ -49,43 +36,24 @@ func TestGmailSendAsListCmd_Text(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	svc, err := gmail.NewService(context.Background(),
-		option.WithoutAuthentication(),
-		option.WithHTTPClient(srv.Client()),
-		option.WithEndpoint(srv.URL+"/"),
+	result := executeWithGmailTestService(
+		t,
+		[]string{"--plain", "--account", "a@b.com", "gmail", "sendas", "list"},
+		newGmailServiceFromServer(t, srv),
 	)
-	if err != nil {
-		t.Fatalf("NewService: %v", err)
+	if result.err != nil {
+		t.Fatalf("execute: %v\nstderr=%q", result.err, result.stderr)
 	}
-	newGmailService = func(context.Context, string) (*gmail.Service, error) { return svc, nil }
 
-	flags := &RootFlags{Account: "a@b.com"}
-
-	textOut := captureStdout(t, func() {
-		u, uiErr := ui.New(ui.Options{Stdout: os.Stdout, Stderr: io.Discard, Color: "never"})
-		if uiErr != nil {
-			t.Fatalf("ui.New: %v", uiErr)
-		}
-		ctx := ui.WithUI(context.Background(), u)
-		ctx = outfmt.WithMode(ctx, outfmt.Mode{})
-
-		if err := runKong(t, &GmailSendAsListCmd{}, []string{}, ctx, flags); err != nil {
-			t.Fatalf("execute: %v", err)
-		}
-	})
-
-	if !strings.Contains(textOut, "EMAIL") || !strings.Contains(textOut, "primary@example.com") {
-		t.Fatalf("unexpected output: %q", textOut)
+	if !strings.Contains(result.stdout, "EMAIL") || !strings.Contains(result.stdout, "primary@example.com") {
+		t.Fatalf("unexpected output: %q", result.stdout)
 	}
-	if !strings.Contains(textOut, "alias@example.com") {
-		t.Fatalf("missing alias line: %q", textOut)
+	if !strings.Contains(result.stdout, "alias@example.com") {
+		t.Fatalf("missing alias line: %q", result.stdout)
 	}
 }
 
 func TestGmailSendAsListCmd_TextEmpty(t *testing.T) {
-	origNew := newGmailService
-	t.Cleanup(func() { newGmailService = origNew })
-
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if strings.Contains(r.URL.Path, "/settings/sendAs") && r.Method == http.MethodGet {
 			w.Header().Set("Content-Type", "application/json")
@@ -96,40 +64,21 @@ func TestGmailSendAsListCmd_TextEmpty(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	svc, err := gmail.NewService(context.Background(),
-		option.WithoutAuthentication(),
-		option.WithHTTPClient(srv.Client()),
-		option.WithEndpoint(srv.URL+"/"),
+	result := executeWithGmailTestService(
+		t,
+		[]string{"--plain", "--account", "a@b.com", "gmail", "sendas", "list"},
+		newGmailServiceFromServer(t, srv),
 	)
-	if err != nil {
-		t.Fatalf("NewService: %v", err)
+	if result.err != nil {
+		t.Fatalf("execute: %v\nstderr=%q", result.err, result.stderr)
 	}
-	newGmailService = func(context.Context, string) (*gmail.Service, error) { return svc, nil }
 
-	flags := &RootFlags{Account: "a@b.com"}
-
-	errOut := captureStderr(t, func() {
-		u, uiErr := ui.New(ui.Options{Stdout: io.Discard, Stderr: os.Stderr, Color: "never"})
-		if uiErr != nil {
-			t.Fatalf("ui.New: %v", uiErr)
-		}
-		ctx := ui.WithUI(context.Background(), u)
-		ctx = outfmt.WithMode(ctx, outfmt.Mode{})
-
-		if err := runKong(t, &GmailSendAsListCmd{}, []string{}, ctx, flags); err != nil {
-			t.Fatalf("execute: %v", err)
-		}
-	})
-
-	if !strings.Contains(errOut, "No send-as aliases") {
-		t.Fatalf("unexpected stderr: %q", errOut)
+	if !strings.Contains(result.stderr, "No send-as aliases") {
+		t.Fatalf("unexpected stderr: %q", result.stderr)
 	}
 }
 
 func TestGmailSendAsGetCmd_Text(t *testing.T) {
-	origNew := newGmailService
-	t.Cleanup(func() { newGmailService = origNew })
-
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if strings.Contains(r.URL.Path, "/settings/sendAs/work@company.com") && r.Method == http.MethodGet {
 			w.Header().Set("Content-Type", "application/json")
@@ -149,35 +98,19 @@ func TestGmailSendAsGetCmd_Text(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	svc, err := gmail.NewService(context.Background(),
-		option.WithoutAuthentication(),
-		option.WithHTTPClient(srv.Client()),
-		option.WithEndpoint(srv.URL+"/"),
+	result := executeWithGmailTestService(
+		t,
+		[]string{"--plain", "--account", "a@b.com", "gmail", "sendas", "get", "work@company.com"},
+		newGmailServiceFromServer(t, srv),
 	)
-	if err != nil {
-		t.Fatalf("NewService: %v", err)
-	}
-	newGmailService = func(context.Context, string) (*gmail.Service, error) { return svc, nil }
-
-	flags := &RootFlags{Account: "a@b.com"}
-
-	var outBuf bytes.Buffer
-	u, err := ui.New(ui.Options{Stdout: &outBuf, Stderr: io.Discard, Color: "never"})
-	if err != nil {
-		t.Fatalf("ui.New: %v", err)
-	}
-	ctx := ui.WithUI(context.Background(), u)
-	ctx = outfmt.WithMode(ctx, outfmt.Mode{})
-
-	if err := runKong(t, &GmailSendAsGetCmd{}, []string{"work@company.com"}, ctx, flags); err != nil {
-		t.Fatalf("execute: %v", err)
+	if result.err != nil {
+		t.Fatalf("execute: %v\nstderr=%q", result.err, result.stderr)
 	}
 
-	out := outBuf.String()
-	if !strings.Contains(out, "send_as_email\twork@company.com") {
-		t.Fatalf("unexpected output: %q", out)
+	if !strings.Contains(result.stdout, "send_as_email\twork@company.com") {
+		t.Fatalf("unexpected output: %q", result.stdout)
 	}
-	if !strings.Contains(out, "verification_status\taccepted") {
-		t.Fatalf("unexpected output: %q", out)
+	if !strings.Contains(result.stdout, "verification_status\taccepted") {
+		t.Fatalf("unexpected output: %q", result.stdout)
 	}
 }

@@ -13,15 +13,6 @@ import (
 )
 
 func TestExecute_ContactsMoreCommands_Text(t *testing.T) {
-	origContacts := newPeopleContactsService
-	origOther := newPeopleOtherContactsService
-	origDir := newPeopleDirectoryService
-	t.Cleanup(func() {
-		newPeopleContactsService = origContacts
-		newPeopleOtherContactsService = origOther
-		newPeopleDirectoryService = origDir
-	})
-
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		path := r.URL.Path
 		switch {
@@ -139,41 +130,26 @@ func TestExecute_ContactsMoreCommands_Text(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewService: %v", err)
 	}
-	newPeopleContactsService = func(context.Context, string) (*people.Service, error) { return svc, nil }
-	newPeopleOtherContactsService = func(context.Context, string) (*people.Service, error) { return svc, nil }
-	newPeopleDirectoryService = func(context.Context, string) (*people.Service, error) { return svc, nil }
 
-	out := captureStdout(t, func() {
-		_ = captureStderr(t, func() {
-			if err := Execute([]string{"--account", "a@b.com", "contacts", "search", "Ada"}); err != nil {
-				t.Fatalf("search: %v", err)
-			}
-			if err := Execute([]string{"--account", "a@b.com", "contacts", "list", "--max", "1"}); err != nil {
-				t.Fatalf("list: %v", err)
-			}
-			if err := Execute([]string{"--account", "a@b.com", "contacts", "get", "people/c1"}); err != nil {
-				t.Fatalf("get: %v", err)
-			}
-			if err := Execute([]string{"--account", "a@b.com", "contacts", "create", "--given", "Grace"}); err != nil {
-				t.Fatalf("create: %v", err)
-			}
-			if err := Execute([]string{"--account", "a@b.com", "contacts", "update", "people/c1", "--given", "Ada"}); err != nil {
-				t.Fatalf("update: %v", err)
-			}
-			if err := Execute([]string{"--force", "--account", "a@b.com", "contacts", "delete", "people/c1"}); err != nil {
-				t.Fatalf("delete: %v", err)
-			}
-			if err := Execute([]string{"--account", "a@b.com", "contacts", "directory", "search", "Dir"}); err != nil {
-				t.Fatalf("dir search: %v", err)
-			}
-			if err := Execute([]string{"--account", "a@b.com", "contacts", "other", "list"}); err != nil {
-				t.Fatalf("other list: %v", err)
-			}
-			if err := Execute([]string{"--account", "a@b.com", "contacts", "other", "search", "Other"}); err != nil {
-				t.Fatalf("other search: %v", err)
-			}
-		})
-	})
+	var output strings.Builder
+	run := func(name string, args ...string) {
+		t.Helper()
+		result := executeWithAllPeopleTestServices(t, args, svc)
+		if result.err != nil {
+			t.Fatalf("%s: %v", name, result.err)
+		}
+		output.WriteString(result.stdout)
+	}
+	run("search", "--account", "a@b.com", "contacts", "search", "Ada")
+	run("list", "--account", "a@b.com", "contacts", "list", "--max", "1")
+	run("get", "--account", "a@b.com", "contacts", "get", "people/c1")
+	run("create", "--account", "a@b.com", "contacts", "create", "--given", "Grace")
+	run("update", "--account", "a@b.com", "contacts", "update", "people/c1", "--given", "Ada")
+	run("delete", "--force", "--account", "a@b.com", "contacts", "delete", "people/c1")
+	run("dir search", "--account", "a@b.com", "contacts", "directory", "search", "Dir")
+	run("other list", "--account", "a@b.com", "contacts", "other", "list")
+	run("other search", "--account", "a@b.com", "contacts", "other", "search", "Other")
+	out := output.String()
 	if !strings.Contains(out, "RESOURCE") || !strings.Contains(out, "people/c1") || !strings.Contains(out, "people/d1") {
 		t.Fatalf("unexpected output: %q", out)
 	}

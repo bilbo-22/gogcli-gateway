@@ -1,7 +1,6 @@
 package cmd
 
 import (
-	"context"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
@@ -9,17 +8,10 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
-
-	"google.golang.org/api/gmail/v1"
-	"google.golang.org/api/option"
 )
 
 func TestExecute_GmailWatch_MoreCommands(t *testing.T) {
-	origNew := newGmailService
-	t.Cleanup(func() { newGmailService = origNew })
-
-	home := t.TempDir()
-	t.Setenv("HOME", home)
+	setWatchTestConfigHome(t)
 	t.Setenv("GOG_ACCOUNT", "a@b.com")
 
 	var stopCalled bool
@@ -56,63 +48,48 @@ func TestExecute_GmailWatch_MoreCommands(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	svc, newServiceErr := gmail.NewService(context.Background(),
-		option.WithoutAuthentication(),
-		option.WithHTTPClient(srv.Client()),
-		option.WithEndpoint(srv.URL+"/"),
-	)
-	if newServiceErr != nil {
-		t.Fatalf("NewService: %v", newServiceErr)
+	svc := newGmailServiceFromServer(t, srv)
+	run := func(args ...string) executeTestResult {
+		return executeWithGmailTestService(t, args, svc)
 	}
-	newGmailService = func(context.Context, string) (*gmail.Service, error) { return svc, nil }
 
-	_ = captureStderr(t, func() {
-		_ = captureStdout(t, func() {
-			if execErr := Execute([]string{"--json", "gmail", "watch", "start", "--topic", "projects/p/topics/t", "--label", "INBOX"}); execErr != nil {
-				t.Fatalf("start: %v", execErr)
-			}
-		})
-		if watchCalls != 1 {
-			t.Fatalf("expected watch call, got %d", watchCalls)
-		}
+	if result := run("--json", "gmail", "watch", "start", "--topic", "projects/p/topics/t", "--label", "INBOX"); result.err != nil {
+		t.Fatalf("start: %v", result.err)
+	}
+	if watchCalls != 1 {
+		t.Fatalf("expected watch call, got %d", watchCalls)
+	}
 
-		_ = captureStdout(t, func() {
-			if execErr := Execute([]string{"--json", "gmail", "watch", "status"}); execErr != nil {
-				t.Fatalf("status: %v", execErr)
-			}
-		})
-		_ = captureStdout(t, func() {
-			if execErr := Execute([]string{"--json", "gmail", "watch", "renew", "--ttl", "10"}); execErr != nil {
-				t.Fatalf("renew: %v", execErr)
-			}
-		})
-		if watchCalls != 2 {
-			t.Fatalf("expected second watch call, got %d", watchCalls)
-		}
+	if result := run("--json", "gmail", "watch", "status"); result.err != nil {
+		t.Fatalf("status: %v", result.err)
+	}
+	if result := run("--json", "gmail", "watch", "renew", "--ttl", "10"); result.err != nil {
+		t.Fatalf("renew: %v", result.err)
+	}
+	if watchCalls != 2 {
+		t.Fatalf("expected second watch call, got %d", watchCalls)
+	}
 
-		// Serve validations (should error before ListenAndServe).
-		if execErr := Execute([]string{"gmail", "watch", "serve", "--path", "nope"}); execErr == nil || !strings.Contains(execErr.Error(), "--path must start") {
-			t.Fatalf("expected path validation error, got: %v", execErr)
-		}
-		if execErr := Execute([]string{"gmail", "watch", "serve", "--port", "0"}); execErr == nil || !strings.Contains(execErr.Error(), "--port must be > 0") {
-			t.Fatalf("expected port validation error, got: %v", execErr)
-		}
-		if execErr := Execute([]string{"gmail", "watch", "serve", "--bind", "0.0.0.0", "--path", "/x"}); execErr == nil || !strings.Contains(execErr.Error(), "--verify-oidc or --token required") {
-			t.Fatalf("expected bind validation error, got: %v", execErr)
-		}
+	// Serve validations should fail before ListenAndServe.
+	if result := run("gmail", "watch", "serve", "--path", "nope"); result.err == nil || !strings.Contains(result.err.Error(), "--path must start") {
+		t.Fatalf("expected path validation error, got: %v", result.err)
+	}
+	if result := run("gmail", "watch", "serve", "--port", "0"); result.err == nil || !strings.Contains(result.err.Error(), "--port must be > 0") {
+		t.Fatalf("expected port validation error, got: %v", result.err)
+	}
+	if result := run("gmail", "watch", "serve", "--bind", "0.0.0.0", "--path", "/x"); result.err == nil || !strings.Contains(result.err.Error(), "--verify-oidc or --token required") {
+		t.Fatalf("expected bind validation error, got: %v", result.err)
+	}
 
-		_ = captureStdout(t, func() {
-			if execErr := Execute([]string{"--json", "--force", "gmail", "watch", "stop"}); execErr != nil {
-				t.Fatalf("stop: %v", execErr)
-			}
-		})
-	})
+	if result := run("--json", "--force", "gmail", "watch", "stop"); result.err != nil {
+		t.Fatalf("stop: %v", result.err)
+	}
 
 	if !stopCalled {
 		t.Fatalf("expected stop called")
 	}
 	// State file removed.
-	p, err := gmailWatchStatePath("a@b.com")
+	p, err := gmailWatchStatePath(gmailWatchTestLayout(t), "a@b.com")
 	if err != nil {
 		t.Fatalf("state path: %v", err)
 	}
@@ -120,8 +97,10 @@ func TestExecute_GmailWatch_MoreCommands(t *testing.T) {
 		t.Fatalf("expected watch state removed: %s", p)
 	}
 
-	// Ensure dir exists but file doesn't.
-	if !strings.Contains(p, filepath.Join("gogcli", "state", "gmail-watch")) {
+	// Ensure the account-scoped file is under the watch state directory shape.
+	newWatchDir := filepath.Join("gogcli", "gmail-watch")
+	legacyWatchDir := filepath.Join("gogcli", "state", "gmail-watch")
+	if !strings.Contains(p, newWatchDir) && !strings.Contains(p, legacyWatchDir) {
 		t.Fatalf("unexpected state path: %s", p)
 	}
 }

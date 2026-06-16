@@ -13,6 +13,8 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"google.golang.org/api/docs/v1"
+
+	"github.com/steipete/gogcli/internal/googleapi"
 )
 
 // TestV10LiveVerification fetches the live test document and verifies
@@ -55,7 +57,7 @@ func TestV10LiveVerification(t *testing.T) {
 	out, err := cmd.Output()
 	if err != nil {
 		// Fall back: try direct API
-		docsSvc, err2 := newDocsService(context.Background(), account)
+		docsSvc, err2 := googleapi.NewDocs(context.Background(), account)
 		if err2 != nil {
 			t.Fatalf("can't fetch doc: gog failed (%v) and direct API failed (%v)", err, err2)
 		}
@@ -609,5 +611,5 @@ func colorClose(a, b float64) bool {
 // newDocsServiceFromConfig creates a Google Docs service using stored OAuth
 // credentials for the given account (used by live tests only).
 func newDocsServiceFromConfig(account string) (*docs.Service, error) {
-	return newDocsService(context.Background(), account)
+	return googleapi.NewDocs(context.Background(), account)
 }

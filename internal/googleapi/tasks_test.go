@@ -1,10 +1,8 @@
 package googleapi
 
 import (
-	"context"
 	"testing"
 
-	"github.com/steipete/gogcli/internal/config"
 	"github.com/steipete/gogcli/internal/secrets"
 )
 
@@ -28,22 +26,14 @@ func (s *tasksStubStore) GetToken(string, string) (secrets.Token, error) {
 }
 
 func TestNewTasks(t *testing.T) {
-	origRead := readClientCredentials
-	origOpen := openSecretsStore
-
-	t.Cleanup(func() {
-		readClientCredentials = origRead
-		openSecretsStore = origOpen
-	})
-
-	readClientCredentials = func(string) (config.ClientCredentials, error) {
-		return config.ClientCredentials{ClientID: "id", ClientSecret: "secret"}, nil
-	}
-	openSecretsStore = func() (secrets.Store, error) {
+	ctx := testClientResolverContext(t)
+	dependencies, _ := authDependenciesFromContext(ctx)
+	dependencies.OpenTokens = func() (secrets.Store, error) {
 		return &tasksStubStore{tok: secrets.Token{RefreshToken: "rt"}}, nil
 	}
+	ctx = WithAuthDependencies(ctx, dependencies)
 
-	svc, err := NewTasks(context.Background(), "a@b.com")
+	svc, err := NewTasks(ctx, "a@b.com")
 	if err != nil {
 		t.Fatalf("NewTasks: %v", err)
 	}

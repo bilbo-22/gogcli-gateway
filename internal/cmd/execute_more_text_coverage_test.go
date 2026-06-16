@@ -14,9 +14,6 @@ import (
 )
 
 func TestExecute_ContactsList_Text(t *testing.T) {
-	origNew := newPeopleContactsService
-	t.Cleanup(func() { newPeopleContactsService = origNew })
-
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if !strings.Contains(r.URL.Path, "/people/me/connections") {
 			http.NotFound(w, r)
@@ -46,27 +43,21 @@ func TestExecute_ContactsList_Text(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewService: %v", err)
 	}
-	newPeopleContactsService = func(context.Context, string) (*people.Service, error) { return svc, nil }
 
-	out := captureStdout(t, func() {
-		errOut := captureStderr(t, func() {
-			if err := Execute([]string{"--account", "a@b.com", "contacts", "list", "--max", "1"}); err != nil {
-				t.Fatalf("Execute: %v", err)
-			}
-		})
-		if !strings.Contains(errOut, "# Next page: --page npt") {
-			t.Fatalf("unexpected stderr=%q", errOut)
-		}
-	})
+	result := executeWithPeopleContactsTestService(t, []string{"--account", "a@b.com", "contacts", "list", "--max", "1"}, svc)
+	if result.err != nil {
+		t.Fatalf("Execute: %v", result.err)
+	}
+	if !strings.Contains(result.stderr, "# Next page: --page npt") {
+		t.Fatalf("unexpected stderr=%q", result.stderr)
+	}
+	out := result.stdout
 	if !strings.Contains(out, "RESOURCE") || !strings.Contains(out, "people/c1") || !strings.Contains(out, "Ada") {
 		t.Fatalf("unexpected out=%q", out)
 	}
 }
 
 func TestExecute_ContactsGet_ByResource_Text(t *testing.T) {
-	origNew := newPeopleContactsService
-	t.Cleanup(func() { newPeopleContactsService = origNew })
-
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if !(strings.Contains(r.URL.Path, "/people/c1") && r.Method == http.MethodGet && !strings.Contains(r.URL.Path, ":")) {
 			http.NotFound(w, r)
@@ -92,24 +83,18 @@ func TestExecute_ContactsGet_ByResource_Text(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewService: %v", err)
 	}
-	newPeopleContactsService = func(context.Context, string) (*people.Service, error) { return svc, nil }
 
-	out := captureStdout(t, func() {
-		_ = captureStderr(t, func() {
-			if err := Execute([]string{"--account", "a@b.com", "contacts", "get", "people/c1"}); err != nil {
-				t.Fatalf("Execute: %v", err)
-			}
-		})
-	})
+	result := executeWithPeopleContactsTestService(t, []string{"--account", "a@b.com", "contacts", "get", "people/c1"}, svc)
+	if result.err != nil {
+		t.Fatalf("Execute: %v", result.err)
+	}
+	out := result.stdout
 	if !strings.Contains(out, "resource\tpeople/c1") || !strings.Contains(out, "email\tada@example.com") {
 		t.Fatalf("unexpected out=%q", out)
 	}
 }
 
 func TestExecute_ContactsGet_CustomFieldsSorted_Text(t *testing.T) {
-	origNew := newPeopleContactsService
-	t.Cleanup(func() { newPeopleContactsService = origNew })
-
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if !(strings.Contains(r.URL.Path, "/people/c1") && r.Method == http.MethodGet) {
 			http.NotFound(w, r)
@@ -135,15 +120,12 @@ func TestExecute_ContactsGet_CustomFieldsSorted_Text(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewService: %v", err)
 	}
-	newPeopleContactsService = func(context.Context, string) (*people.Service, error) { return svc, nil }
 
-	out := captureStdout(t, func() {
-		_ = captureStderr(t, func() {
-			if err := Execute([]string{"--account", "a@b.com", "contacts", "get", "people/c1"}); err != nil {
-				t.Fatalf("Execute: %v", err)
-			}
-		})
-	})
+	result := executeWithPeopleContactsTestService(t, []string{"--account", "a@b.com", "contacts", "get", "people/c1"}, svc)
+	if result.err != nil {
+		t.Fatalf("Execute: %v", result.err)
+	}
+	out := result.stdout
 
 	a := strings.Index(out, "custom:aaa\t1")
 	b := strings.Index(out, "custom:mmm\t2")
@@ -157,10 +139,7 @@ func TestExecute_ContactsGet_CustomFieldsSorted_Text(t *testing.T) {
 }
 
 func TestExecute_CalendarFreeBusy_Text(t *testing.T) {
-	origNew := newCalendarService
-	t.Cleanup(func() { newCalendarService = origNew })
-
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	srv := httptest.NewServer(withPrimaryCalendar(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if !(strings.Contains(r.URL.Path, "/freeBusy") && r.Method == http.MethodPost) {
 			http.NotFound(w, r)
 			return
@@ -173,7 +152,7 @@ func TestExecute_CalendarFreeBusy_Text(t *testing.T) {
 				},
 			},
 		})
-	}))
+	})))
 	defer srv.Close()
 
 	svc, err := calendar.NewService(context.Background(),
@@ -184,15 +163,12 @@ func TestExecute_CalendarFreeBusy_Text(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewService: %v", err)
 	}
-	newCalendarService = func(context.Context, string) (*calendar.Service, error) { return svc, nil }
 
-	out := captureStdout(t, func() {
-		_ = captureStderr(t, func() {
-			if err := Execute([]string{"--account", "a@b.com", "calendar", "freebusy", "c1", "--from", "2025-12-17T00:00:00Z", "--to", "2025-12-18T00:00:00Z"}); err != nil {
-				t.Fatalf("Execute: %v", err)
-			}
-		})
-	})
+	result := executeWithCalendarTestService(t, []string{"--account", "a@b.com", "calendar", "freebusy", "c1", "--from", "2025-12-17T00:00:00Z", "--to", "2025-12-18T00:00:00Z"}, svc)
+	if result.err != nil {
+		t.Fatalf("Execute: %v", result.err)
+	}
+	out := result.stdout
 	if !strings.Contains(out, "CALENDAR") || !strings.Contains(out, "c1") || !strings.Contains(out, "2025-12-17T10:00:00Z") {
 		t.Fatalf("unexpected out=%q", out)
 	}

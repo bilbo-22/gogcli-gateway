@@ -2,20 +2,19 @@ package cmd
 
 import (
 	"context"
-	"encoding/json"
-	"fmt"
-	"os"
+	"errors"
 	"strings"
 
 	"google.golang.org/api/sheets/v4"
 
 	"github.com/steipete/gogcli/internal/outfmt"
+	"github.com/steipete/gogcli/internal/sheetsformat"
 	"github.com/steipete/gogcli/internal/ui"
 )
 
 type SheetsFormatCmd struct {
 	SpreadsheetID string `arg:"" name:"spreadsheetId" help:"Spreadsheet ID"`
-	Range         string `arg:"" name:"range" help:"Range (eg. Sheet1!A1:B2)"`
+	Range         string `arg:"" name:"range" help:"Range (A1 notation with sheet name, or named range name; e.g. Sheet1!A1:B2 or MyNamedRange)"`
 	FormatJSON    string `name:"format-json" help:"Cell format as JSON (Sheets API CellFormat)"`
 	FormatFields  string `name:"format-fields" help:"Format field mask (eg. userEnteredFormat.textFormat.bold or textFormat.bold)"`
 }
@@ -31,34 +30,38 @@ func (c *SheetsFormatCmd) Run(ctx context.Context, flags *RootFlags) error {
 		return usage("empty range")
 	}
 	if strings.TrimSpace(c.FormatJSON) == "" {
-		return fmt.Errorf("provide format JSON via --format-json")
-	}
-	formatFields := strings.TrimSpace(c.FormatFields)
-	if formatFields == "" {
-		return fmt.Errorf("provide format fields via --format-fields")
+		return usage("provide format JSON via --format-json")
 	}
 
-	var err error
 	var format sheets.CellFormat
-	b, err := resolveInlineOrFileBytes(c.FormatJSON)
+	b, err := resolveInlineOrFileBytes(c.FormatJSON, stdinReader(ctx))
 	if err != nil {
-		return fmt.Errorf("read --format-json: %w", err)
+		return usagef("read --format-json: %v", err)
 	}
-	if err = json.Unmarshal(b, &format); err != nil {
-		return fmt.Errorf("invalid format JSON: %w", err)
+	if err = sheetsformat.Decode(b, &format); err != nil {
+		return usagef("invalid format JSON: %v", err)
 	}
 
-	normalizedFields, formatJSONPaths := normalizeFormatMask(formatFields)
-	if normalizedFields != "" {
-		formatFields = normalizedFields
+	formatFields := strings.TrimSpace(c.FormatFields)
+	var formatJSONPaths []string
+	if formatFields == "" {
+		var inferErr error
+		formatFields, formatJSONPaths, inferErr = sheetsformat.InferMask(b)
+		if inferErr != nil {
+			return sheetsFormatInputError(inferErr)
+		}
+	} else {
+		if sheetsformat.HasBordersTypo(formatFields) {
+			return usage(`invalid --format-fields: found "boarders"; use "borders"`)
+		}
+		normalizedFields, paths := sheetsformat.NormalizeMask(formatFields)
+		if normalizedFields != "" {
+			formatFields = normalizedFields
+		}
+		formatJSONPaths = paths
 	}
-	if err = applyForceSendFields(&format, formatJSONPaths); err != nil {
-		return err
-	}
-
-	rangeInfo, err := parseSheetRange(rangeSpec, "format")
-	if err != nil {
-		return err
+	if err = sheetsformat.ApplyForceSendFields(&format, formatJSONPaths); err != nil {
+		return usage(err.Error())
 	}
 
 	if dryRunErr := dryRunExit(ctx, flags, "sheets.format", map[string]any{
@@ -75,16 +78,16 @@ func (c *SheetsFormatCmd) Run(ctx context.Context, flags *RootFlags) error {
 		return err
 	}
 
-	svc, err := newSheetsService(ctx, account)
+	svc, err := sheetsService(ctx, account)
 	if err != nil {
 		return err
 	}
 
-	sheetIDs, err := fetchSheetIDMap(ctx, svc, spreadsheetID)
+	catalog, err := fetchSpreadsheetRangeCatalog(ctx, svc, spreadsheetID)
 	if err != nil {
 		return err
 	}
-	gridRange, err := gridRangeFromMap(rangeInfo, sheetIDs, "format")
+	gridRange, err := resolveGridRangeWithCatalog(rangeSpec, catalog, "format")
 	if err != nil {
 		return err
 	}
@@ -108,12 +111,20 @@ func (c *SheetsFormatCmd) Run(ctx context.Context, flags *RootFlags) error {
 	}
 
 	if outfmt.IsJSON(ctx) {
-		return outfmt.WriteJSON(ctx, os.Stdout, map[string]any{
+		return outfmt.WriteJSON(ctx, stdoutWriter(ctx), map[string]any{
 			"range":  rangeSpec,
 			"fields": formatFields,
 		})
 	}
 
-	u.Out().Printf("Formatted %s", rangeSpec)
+	u.Out().Linef("Formatted %s", rangeSpec)
 	return nil
+}
+
+func sheetsFormatInputError(err error) error {
+	var validationErr sheetsformat.ValidationError
+	if errors.As(err, &validationErr) {
+		return usage(validationErr.Error())
+	}
+	return err
 }

@@ -7,6 +7,7 @@ import (
 
 	"google.golang.org/api/slides/v1"
 
+	"github.com/steipete/gogcli/internal/outfmt"
 	"github.com/steipete/gogcli/internal/ui"
 )
 
@@ -18,11 +19,6 @@ type SlidesDeleteSlideCmd struct {
 func (c *SlidesDeleteSlideCmd) Run(ctx context.Context, flags *RootFlags) error {
 	u := ui.FromContext(ctx)
 
-	account, err := requireAccount(flags)
-	if err != nil {
-		return err
-	}
-
 	presentationID := strings.TrimSpace(c.PresentationID)
 	if presentationID == "" {
 		return usage("empty presentationId")
@@ -32,7 +28,19 @@ func (c *SlidesDeleteSlideCmd) Run(ctx context.Context, flags *RootFlags) error 
 		return usage("empty slideId")
 	}
 
-	slidesSvc, err := newSlidesService(ctx, account)
+	if err := dryRunAndConfirmDestructive(ctx, flags, "slides.delete-slide", map[string]any{
+		"presentation_id": presentationID,
+		"slide_id":        slideID,
+	}, fmt.Sprintf("delete slide %s from presentation %s", slideID, presentationID)); err != nil {
+		return err
+	}
+
+	account, err := requireAccount(flags)
+	if err != nil {
+		return err
+	}
+
+	slidesSvc, err := slidesService(ctx, account)
 	if err != nil {
 		return err
 	}
@@ -50,6 +58,14 @@ func (c *SlidesDeleteSlideCmd) Run(ctx context.Context, flags *RootFlags) error 
 		return fmt.Errorf("delete slide: %w", err)
 	}
 
-	u.Out().Printf("Deleted slide %s", slideID)
+	if outfmt.IsJSON(ctx) {
+		return outfmt.WriteJSON(ctx, stdoutWriter(ctx), map[string]any{
+			"presentationId": presentationID,
+			"slideObjectId":  slideID,
+			"deleted":        true,
+		})
+	}
+
+	u.Out().Linef("Deleted slide %s", slideID)
 	return nil
 }

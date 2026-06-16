@@ -6,7 +6,6 @@ import (
 	"errors"
 	"net/http"
 	"net/http/httptest"
-	"os"
 	"strings"
 	"testing"
 	"time"
@@ -16,11 +15,8 @@ import (
 )
 
 func TestCalendarTimeCmd_JSON(t *testing.T) {
-	origNew := newCalendarService
-	t.Cleanup(func() { newCalendarService = origNew })
-
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if strings.Contains(r.URL.Path, "/users/me/calendarList/primary") && r.Method == http.MethodGet {
+		if r.URL.Path == "/calendars/primary" && r.Method == http.MethodGet {
 			w.Header().Set("Content-Type", "application/json")
 			_ = json.NewEncoder(w).Encode(map[string]any{
 				"id":       "primary",
@@ -41,15 +37,11 @@ func TestCalendarTimeCmd_JSON(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewService: %v", err)
 	}
-	newCalendarService = func(context.Context, string) (*calendar.Service, error) { return svc, nil }
-
-	out := captureStdout(t, func() {
-		_ = captureStderr(t, func() {
-			if err := Execute([]string{"--json", "--account", "a@b.com", "calendar", "time"}); err != nil {
-				t.Fatalf("Execute: %v", err)
-			}
-		})
-	})
+	result := executeWithCalendarTestService(t, []string{"--json", "--account", "a@b.com", "calendar", "time"}, svc)
+	if result.err != nil {
+		t.Fatalf("Execute: %v", result.err)
+	}
+	out := result.stdout
 
 	var parsed struct {
 		Timezone    string `json:"timezone"`
@@ -77,11 +69,8 @@ func TestCalendarTimeCmd_JSON(t *testing.T) {
 }
 
 func TestCalendarTimeCmd_TableOutput(t *testing.T) {
-	origNew := newCalendarService
-	t.Cleanup(func() { newCalendarService = origNew })
-
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if strings.Contains(r.URL.Path, "/users/me/calendarList/primary") && r.Method == http.MethodGet {
+		if r.URL.Path == "/calendars/primary" && r.Method == http.MethodGet {
 			w.Header().Set("Content-Type", "application/json")
 			_ = json.NewEncoder(w).Encode(map[string]any{
 				"id":       "primary",
@@ -102,15 +91,11 @@ func TestCalendarTimeCmd_TableOutput(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewService: %v", err)
 	}
-	newCalendarService = func(context.Context, string) (*calendar.Service, error) { return svc, nil }
-
-	out := captureStdout(t, func() {
-		_ = captureStderr(t, func() {
-			if err := Execute([]string{"--account", "a@b.com", "calendar", "time"}); err != nil {
-				t.Fatalf("Execute: %v", err)
-			}
-		})
-	})
+	result := executeWithCalendarTestService(t, []string{"--account", "a@b.com", "calendar", "time"}, svc)
+	if result.err != nil {
+		t.Fatalf("Execute: %v", result.err)
+	}
+	out := result.stdout
 
 	// Verify table output contains expected fields
 	if !strings.Contains(out, "timezone") {
@@ -128,22 +113,14 @@ func TestCalendarTimeCmd_TableOutput(t *testing.T) {
 }
 
 func TestCalendarTimeCmd_WithTimezoneFlag(t *testing.T) {
-	origNew := newCalendarService
-	t.Cleanup(func() { newCalendarService = origNew })
-
-	// No server needed since we're using --timezone flag
-	newCalendarService = func(context.Context, string) (*calendar.Service, error) {
+	result := executeWithCalendarTestServiceFactory(t, []string{"--json", "--account", "a@b.com", "calendar", "time", "--timezone", "UTC"}, func(context.Context, string) (*calendar.Service, error) {
 		t.Fatal("should not call calendar service when --timezone is provided")
 		return nil, errors.New("unexpected calendar service call")
-	}
-
-	out := captureStdout(t, func() {
-		_ = captureStderr(t, func() {
-			if err := Execute([]string{"--json", "--account", "a@b.com", "calendar", "time", "--timezone", "UTC"}); err != nil {
-				t.Fatalf("Execute: %v", err)
-			}
-		})
 	})
+	if result.err != nil {
+		t.Fatalf("Execute: %v", result.err)
+	}
+	out := result.stdout
 
 	var parsed struct {
 		Timezone    string `json:"timezone"`
@@ -170,28 +147,17 @@ func TestCalendarTimeCmd_WithTimezoneFlag(t *testing.T) {
 }
 
 func TestCalendarTimeCmd_UsesEnvTimezone(t *testing.T) {
-	origNew := newCalendarService
-	t.Cleanup(func() { newCalendarService = origNew })
-
-	origEnv := os.Getenv("GOG_TIMEZONE")
-	defer os.Setenv("GOG_TIMEZONE", origEnv)
-
 	envTZ := pickTimezoneExcluding(t)
-	os.Setenv("GOG_TIMEZONE", envTZ)
+	t.Setenv("GOG_TIMEZONE", envTZ)
 
-	// No server needed since we're using env timezone
-	newCalendarService = func(context.Context, string) (*calendar.Service, error) {
+	result := executeWithCalendarTestServiceFactory(t, []string{"--json", "--account", "a@b.com", "calendar", "time"}, func(context.Context, string) (*calendar.Service, error) {
 		t.Fatal("should not call calendar service when GOG_TIMEZONE is provided")
 		return nil, errors.New("unexpected calendar service call")
-	}
-
-	out := captureStdout(t, func() {
-		_ = captureStderr(t, func() {
-			if err := Execute([]string{"--json", "--account", "a@b.com", "calendar", "time"}); err != nil {
-				t.Fatalf("Execute: %v", err)
-			}
-		})
 	})
+	if result.err != nil {
+		t.Fatalf("Execute: %v", result.err)
+	}
+	out := result.stdout
 
 	var parsed struct {
 		Timezone    string `json:"timezone"`
@@ -211,28 +177,17 @@ func TestCalendarTimeCmd_UsesEnvTimezone(t *testing.T) {
 }
 
 func TestCalendarTimeCmd_WithTimezoneLocal(t *testing.T) {
-	origNew := newCalendarService
-	t.Cleanup(func() { newCalendarService = origNew })
-
-	origEnv := os.Getenv("GOG_TIMEZONE")
-	defer os.Setenv("GOG_TIMEZONE", origEnv)
-
 	envTZ := pickNonLocalTimezone(t)
-	os.Setenv("GOG_TIMEZONE", envTZ)
+	t.Setenv("GOG_TIMEZONE", envTZ)
 
-	// No server needed since --timezone local should force local
-	newCalendarService = func(context.Context, string) (*calendar.Service, error) {
+	result := executeWithCalendarTestServiceFactory(t, []string{"--json", "--account", "a@b.com", "calendar", "time", "--timezone", "local"}, func(context.Context, string) (*calendar.Service, error) {
 		t.Fatal("should not call calendar service when --timezone local is provided")
 		return nil, errors.New("unexpected calendar service call")
-	}
-
-	out := captureStdout(t, func() {
-		_ = captureStderr(t, func() {
-			if err := Execute([]string{"--json", "--account", "a@b.com", "calendar", "time", "--timezone", "local"}); err != nil {
-				t.Fatalf("Execute: %v", err)
-			}
-		})
 	})
+	if result.err != nil {
+		t.Fatalf("Execute: %v", result.err)
+	}
+	out := result.stdout
 
 	var parsed struct {
 		Timezone string `json:"timezone"`
@@ -247,36 +202,23 @@ func TestCalendarTimeCmd_WithTimezoneLocal(t *testing.T) {
 }
 
 func TestCalendarTimeCmd_InvalidTimezone(t *testing.T) {
-	origNew := newCalendarService
-	t.Cleanup(func() { newCalendarService = origNew })
-
-	// No server needed since we're testing error case
-	newCalendarService = func(context.Context, string) (*calendar.Service, error) {
+	result := executeWithCalendarTestServiceFactory(t, []string{"--account", "a@b.com", "calendar", "time", "--timezone", "Invalid/Timezone"}, func(context.Context, string) (*calendar.Service, error) {
 		t.Fatal("should not call calendar service when invalid timezone is provided")
 		return nil, errors.New("unexpected calendar service call")
+	})
+	if result.err == nil {
+		t.Fatal("expected error for invalid timezone, got nil")
 	}
 
-	stderr := captureStderr(t, func() {
-		_ = captureStdout(t, func() {
-			err := Execute([]string{"--account", "a@b.com", "calendar", "time", "--timezone", "Invalid/Timezone"})
-			if err == nil {
-				t.Fatal("expected error for invalid timezone, got nil")
-			}
-		})
-	})
-
 	// Verify error message contains timezone information
-	if !strings.Contains(stderr, "Invalid/Timezone") && !strings.Contains(stderr, "timezone") {
-		t.Errorf("expected error message about invalid timezone, got: %q", stderr)
+	if !strings.Contains(result.stderr, "Invalid/Timezone") && !strings.Contains(result.stderr, "timezone") {
+		t.Errorf("expected error message about invalid timezone, got: %q", result.stderr)
 	}
 }
 
 func TestCalendarTimeCmd_CustomCalendar(t *testing.T) {
-	origNew := newCalendarService
-	t.Cleanup(func() { newCalendarService = origNew })
-
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if strings.Contains(r.URL.Path, "/users/me/calendarList/custom-cal-id@example.com") && r.Method == http.MethodGet {
+		if strings.Contains(r.URL.Path, "/calendars/custom-cal-id@example.com") && r.Method == http.MethodGet {
 			w.Header().Set("Content-Type", "application/json")
 			_ = json.NewEncoder(w).Encode(map[string]any{
 				"id":       "custom-cal-id@example.com",
@@ -297,15 +239,11 @@ func TestCalendarTimeCmd_CustomCalendar(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewService: %v", err)
 	}
-	newCalendarService = func(context.Context, string) (*calendar.Service, error) { return svc, nil }
-
-	out := captureStdout(t, func() {
-		_ = captureStderr(t, func() {
-			if err := Execute([]string{"--json", "--account", "a@b.com", "calendar", "time", "--calendar", "custom-cal-id@example.com"}); err != nil {
-				t.Fatalf("Execute: %v", err)
-			}
-		})
-	})
+	result := executeWithCalendarTestService(t, []string{"--json", "--account", "a@b.com", "calendar", "time", "--calendar", "custom-cal-id@example.com"}, svc)
+	if result.err != nil {
+		t.Fatalf("Execute: %v", result.err)
+	}
+	out := result.stdout
 
 	var parsed struct {
 		Timezone    string `json:"timezone"`

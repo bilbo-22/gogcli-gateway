@@ -14,13 +14,9 @@ import (
 	"google.golang.org/api/option"
 
 	"github.com/steipete/gogcli/internal/outfmt"
-	"github.com/steipete/gogcli/internal/ui"
 )
 
 func TestDrivePermissionsCmd_TextAndJSON(t *testing.T) {
-	origNew := newDriveService
-	t.Cleanup(func() { newDriveService = origNew })
-
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch {
 		case r.Method == http.MethodGet && strings.Contains(r.URL.Path, "/files/id1/permissions"):
@@ -53,50 +49,39 @@ func TestDrivePermissionsCmd_TextAndJSON(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewService: %v", err)
 	}
-	newDriveService = func(context.Context, string) (*drive.Service, error) { return svc, nil }
 
 	flags := &RootFlags{Account: "a@b.com"}
 
 	// Text mode: table to stdout + next page hint to stderr.
+	var textOut bytes.Buffer
 	var errBuf bytes.Buffer
-	u, err := ui.New(ui.Options{Stdout: io.Discard, Stderr: &errBuf, Color: "never"})
-	if err != nil {
-		t.Fatalf("ui.New: %v", err)
-	}
-	ctx := ui.WithUI(context.Background(), u)
+	ctx := withDriveTestService(newCmdRuntimeOutputContext(t, &textOut, &errBuf), svc)
 	ctx = outfmt.WithMode(ctx, outfmt.Mode{})
 
-	textOut := captureStdout(t, func() {
-		cmd := &DrivePermissionsCmd{}
-		if execErr := runKong(t, cmd, []string{"--max", "1", "--page", "p1", "id1"}, ctx, flags); execErr != nil {
-			t.Fatalf("execute: %v", execErr)
-		}
-	})
-	if !strings.Contains(textOut, "ID") || !strings.Contains(textOut, "TYPE") {
-		t.Fatalf("unexpected table header: %q", textOut)
+	cmd := &DrivePermissionsCmd{}
+	if execErr := runKong(t, cmd, []string{"--max", "1", "--page", "p1", "id1"}, ctx, flags); execErr != nil {
+		t.Fatalf("execute: %v", execErr)
 	}
-	if !strings.Contains(textOut, "p1") || !strings.Contains(textOut, "anyone") || !strings.Contains(textOut, "reader") {
-		t.Fatalf("missing permission row: %q", textOut)
+	if !strings.Contains(textOut.String(), "ID") || !strings.Contains(textOut.String(), "TYPE") {
+		t.Fatalf("unexpected table header: %q", textOut.String())
+	}
+	if !strings.Contains(textOut.String(), "p1") || !strings.Contains(textOut.String(), "anyone") || !strings.Contains(textOut.String(), "reader") {
+		t.Fatalf("missing permission row: %q", textOut.String())
 	}
 	if !strings.Contains(errBuf.String(), "--page npt") {
 		t.Fatalf("missing next page hint: %q", errBuf.String())
 	}
 
 	// JSON mode: JSON to stdout and no next-page hint to stderr.
+	var jsonOut bytes.Buffer
 	var errBuf2 bytes.Buffer
-	u2, err := ui.New(ui.Options{Stdout: io.Discard, Stderr: &errBuf2, Color: "never"})
-	if err != nil {
-		t.Fatalf("ui.New: %v", err)
-	}
-	ctx2 := ui.WithUI(context.Background(), u2)
+	ctx2 := withDriveTestService(newCmdRuntimeOutputContext(t, &jsonOut, &errBuf2), svc)
 	ctx2 = outfmt.WithMode(ctx2, outfmt.Mode{JSON: true})
 
-	jsonOut := captureStdout(t, func() {
-		cmd := &DrivePermissionsCmd{}
-		if execErr := runKong(t, cmd, []string{"--max", "1", "--page", "p1", "id1"}, ctx2, flags); execErr != nil {
-			t.Fatalf("execute: %v", execErr)
-		}
-	})
+	cmd = &DrivePermissionsCmd{}
+	if execErr := runKong(t, cmd, []string{"--max", "1", "--page", "p1", "id1"}, ctx2, flags); execErr != nil {
+		t.Fatalf("execute: %v", execErr)
+	}
 	if errBuf2.String() != "" {
 		t.Fatalf("expected no stderr in json mode, got: %q", errBuf2.String())
 	}
@@ -107,8 +92,8 @@ func TestDrivePermissionsCmd_TextAndJSON(t *testing.T) {
 		Permissions     []*drive.Permission `json:"permissions"`
 		NextPageToken   string              `json:"nextPageToken"`
 	}
-	if err := json.Unmarshal([]byte(jsonOut), &parsed); err != nil {
-		t.Fatalf("json parse: %v\nout=%q", err, jsonOut)
+	if err := json.Unmarshal(jsonOut.Bytes(), &parsed); err != nil {
+		t.Fatalf("json parse: %v\nout=%q", err, jsonOut.String())
 	}
 	if parsed.FileID != "id1" || parsed.NextPageToken != "npt" || parsed.PermissionCount != 1 || len(parsed.Permissions) != 1 {
 		t.Fatalf("unexpected json: %#v", parsed)
@@ -116,9 +101,6 @@ func TestDrivePermissionsCmd_TextAndJSON(t *testing.T) {
 }
 
 func TestDrivePermissionsCmd_OmitsEmptyPageToken(t *testing.T) {
-	origNew := newDriveService
-	t.Cleanup(func() { newDriveService = origNew })
-
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch {
 		case r.Method == http.MethodGet && strings.Contains(r.URL.Path, "/files/id1/permissions"):
@@ -150,29 +132,21 @@ func TestDrivePermissionsCmd_OmitsEmptyPageToken(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewService: %v", err)
 	}
-	newDriveService = func(context.Context, string) (*drive.Service, error) { return svc, nil }
 
 	flags := &RootFlags{Account: "a@b.com"}
-	ctx := outfmt.WithMode(context.Background(), outfmt.Mode{JSON: true})
-	u, err := ui.New(ui.Options{Stdout: io.Discard, Stderr: io.Discard, Color: "never"})
-	if err != nil {
-		t.Fatalf("ui.New: %v", err)
+	var out bytes.Buffer
+	ctx := withDriveTestService(newCmdRuntimeJSONOutputContext(t, &out, io.Discard), svc)
+	cmd := &DrivePermissionsCmd{}
+	if execErr := runKong(t, cmd, []string{"--max", "1", "id1"}, ctx, flags); execErr != nil {
+		t.Fatalf("execute: %v", execErr)
 	}
-	ctx = ui.WithUI(ctx, u)
-
-	out := captureStdout(t, func() {
-		cmd := &DrivePermissionsCmd{}
-		if execErr := runKong(t, cmd, []string{"--max", "1", "id1"}, ctx, flags); execErr != nil {
-			t.Fatalf("execute: %v", execErr)
-		}
-	})
 
 	var parsed struct {
 		PermissionCount int                 `json:"permissionCount"`
 		Permissions     []*drive.Permission `json:"permissions"`
 	}
-	if err := json.Unmarshal([]byte(out), &parsed); err != nil {
-		t.Fatalf("json parse: %v out=%q", err, out)
+	if err := json.Unmarshal(out.Bytes(), &parsed); err != nil {
+		t.Fatalf("json parse: %v out=%q", err, out.String())
 	}
 	if parsed.PermissionCount != 1 || len(parsed.Permissions) != 1 {
 		t.Fatalf("unexpected json: %#v", parsed)

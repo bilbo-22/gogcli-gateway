@@ -34,6 +34,23 @@ func TestFormat_AuthRequired(t *testing.T) {
 	}
 }
 
+func TestFormat_AuthRequired_ServiceAccountOnly(t *testing.T) {
+	for _, service := range []string{"admin", "admin directory", "admin orgunits", "groups", "keep"} {
+		t.Run(service, func(t *testing.T) {
+			err := &gogapi.AuthRequiredError{Service: service, Email: "a@b.com", Cause: keyring.ErrKeyNotFound}
+			got := Format(err)
+
+			if !containsAll(got, "No auth for "+service+" a@b.com", "gog auth service-account set a@b.com") {
+				t.Fatalf("unexpected: %q", got)
+			}
+
+			if strings.Contains(got, "--services "+service) {
+				t.Fatalf("must not suggest unsupported admin service flag: %q", got)
+			}
+		})
+	}
+}
+
 func TestFormat_CredentialsMissing(t *testing.T) {
 	err := &config.CredentialsMissingError{Path: "/tmp/creds.json", Cause: errNope}
 	got := Format(err)
@@ -59,6 +76,15 @@ func TestFormat_UserFacingError(t *testing.T) {
 	}
 }
 
+func TestFormat_UserFacingErrorWrapsSentinel(t *testing.T) {
+	err := NewUserFacingError("friendly", keyring.ErrKeyNotFound)
+	got := Format(err)
+
+	if got != "friendly" {
+		t.Fatalf("unexpected: %q", got)
+	}
+}
+
 func TestFormat_GoogleAPIError(t *testing.T) {
 	err := &ggoogleapi.Error{
 		Code:    403,
@@ -71,6 +97,97 @@ func TestFormat_GoogleAPIError(t *testing.T) {
 
 	if !containsAll(got, "403", "insufficientPermissions", "nope") {
 		t.Fatalf("unexpected: %q", got)
+	}
+}
+
+func TestFormat_GoogleAPIError_AccessNotConfiguredHint(t *testing.T) {
+	err := &ggoogleapi.Error{
+		Code: 403,
+		Message: "Google Drive API has not been used in project 123 before or it is disabled. " +
+			"Enable it by visiting https://console.developers.google.com/apis/api/drive.googleapis.com/overview?project=123",
+		Errors: []ggoogleapi.ErrorItem{
+			{Reason: "accessNotConfigured"},
+		},
+	}
+	got := Format(err)
+
+	if !containsAll(got, "Drive API is not enabled", "drive.googleapis.com", "--services drive") {
+		t.Fatalf("unexpected: %q", got)
+	}
+
+	if !strings.Contains(got, "overview?project=123") {
+		t.Fatalf("expected project-scoped enable URL, got: %q", got)
+	}
+
+	if strings.Contains(got, "Google API error") {
+		t.Fatalf("expected user-facing enablement hint, got: %q", got)
+	}
+}
+
+func TestFormat_GoogleAPIError_ServiceAccountOnlyDisabledAPI(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		apiName string
+		service string
+	}{
+		{name: "admin", apiName: "admin.googleapis.com", service: "admin"},
+		{name: "keep", apiName: "keep.googleapis.com", service: "keep"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			err := &ggoogleapi.Error{
+				Code: 403,
+				Message: "API has not been used. Enable it by visiting " +
+					"https://console.developers.google.com/apis/api/" + tc.apiName + "/overview?project=123",
+				Errors: []ggoogleapi.ErrorItem{
+					{Reason: "accessNotConfigured"},
+				},
+			}
+
+			got := Format(err)
+			if !containsAll(got, "service-account set", "overview?project=123") {
+				t.Fatalf("unexpected: %q", got)
+			}
+
+			if strings.Contains(got, "--services "+tc.service) || strings.Contains(got, "gog auth add") {
+				t.Fatalf("must not suggest unsupported OAuth flow: %q", got)
+			}
+		})
+	}
+}
+
+func TestFormat_GoogleAPIError_DriveActivityHint(t *testing.T) {
+	err := &ggoogleapi.Error{
+		Code: 403,
+		Message: "Google Drive Activity API has not been used in project 123 before or it is disabled. " +
+			"Enable it by visiting https://console.developers.google.com/apis/api/driveactivity.googleapis.com/overview?project=123",
+		Errors: []ggoogleapi.ErrorItem{
+			{Reason: "accessNotConfigured"},
+		},
+	}
+	got := Format(err)
+
+	if !containsAll(got, "Drive Activity API is not enabled", "driveactivity.googleapis.com", "--services driveactivity") {
+		t.Fatalf("unexpected: %q", got)
+	}
+}
+
+func TestFormat_GoogleAPIError_AnalyticsAdminHint(t *testing.T) {
+	err := &ggoogleapi.Error{
+		Code: 403,
+		Message: "Google Analytics Admin API has not been used in project 123 before or it is disabled. " +
+			"Enable it by visiting https://console.developers.google.com/apis/api/analyticsadmin.googleapis.com/overview?project=123",
+		Errors: []ggoogleapi.ErrorItem{
+			{Reason: "accessNotConfigured"},
+		},
+	}
+	got := Format(err)
+
+	if !containsAll(got, "Analytics Admin API is not enabled", "analyticsadmin.googleapis.com", "--services analytics") {
+		t.Fatalf("unexpected: %q", got)
+	}
+
+	if strings.Contains(got, "Admin SDK API") {
+		t.Fatalf("expected Analytics Admin hint, got: %q", got)
 	}
 }
 

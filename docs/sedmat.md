@@ -309,6 +309,48 @@ s/![logo]/!(https:\/\/new-logo.png)/ # match by alt text
 
 ---
 
+## Paragraph Addressing
+
+Target specific paragraphs by number using address prefixes. Use `gog docs structure` to see paragraph numbers.
+
+```bash
+# Introspection — see paragraph numbers, types, and content
+gog docs structure <DOC_ID>              # show numbered structure
+gog docs cat <DOC_ID> -N                 # cat with [N] prefixes
+
+# Delete by paragraph number
+gog docs sed <DOC_ID> '5d'              # delete paragraph 5
+gog docs sed <DOC_ID> '3,7d'            # delete paragraphs 3-7
+gog docs sed <DOC_ID> '$d'              # delete last paragraph
+
+# Substitute within addressed paragraphs
+gog docs sed <DOC_ID> '5s/.*/New text/' # replace all text in paragraph 5
+gog docs sed <DOC_ID> '3,7s/old/new/g' # replace within paragraphs 3-7
+
+# Insert/Append around addressed paragraphs
+gog docs sed <DOC_ID> '5a/New line/'    # append after paragraph 5
+gog docs sed <DOC_ID> '3i/Before text/' # insert before paragraph 3
+gog docs sed <DOC_ID> '$a/Last line/'   # append after last paragraph
+```
+
+### Address Syntax
+
+| Address | Meaning |
+|---------|---------|
+| `N` | Paragraph number N (1-based) |
+| `N,M` | Range from paragraph N to M |
+| `$` | Last paragraph |
+| `N,$` | From paragraph N to end |
+
+### Multi-Tab Support
+
+```bash
+gog docs structure <DOC_ID> --tab "Sheet1"
+gog docs sed <DOC_ID> --tab "Sheet1" '3d'
+```
+
+---
+
 ## Batch Mode
 
 Create a `.sed` file with one expression per line. Comments start with `#`.

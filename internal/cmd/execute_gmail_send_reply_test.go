@@ -1,7 +1,6 @@
 package cmd
 
 import (
-	"context"
 	"encoding/base64"
 	"encoding/json"
 	"io"
@@ -11,13 +10,9 @@ import (
 	"testing"
 
 	"google.golang.org/api/gmail/v1"
-	"google.golang.org/api/option"
 )
 
 func TestExecute_GmailSend_ReplyToHeader(t *testing.T) {
-	origNew := newGmailService
-	t.Cleanup(func() { newGmailService = origNew })
-
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch {
 		case r.Method == http.MethodPost && strings.Contains(r.URL.Path, "/gmail/v1/users/me/messages/send"):
@@ -46,37 +41,22 @@ func TestExecute_GmailSend_ReplyToHeader(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	svc, err := gmail.NewService(context.Background(),
-		option.WithoutAuthentication(),
-		option.WithHTTPClient(srv.Client()),
-		option.WithEndpoint(srv.URL+"/"),
-	)
-	if err != nil {
-		t.Fatalf("NewService: %v", err)
+	svc := newGmailServiceFromServer(t, srv)
+	result := executeWithGmailTestService(t, []string{
+		"--json",
+		"--account", "a@b.com",
+		"gmail", "send",
+		"--to", "x@y.com",
+		"--subject", "S",
+		"--body", "B",
+		"--reply-to", "reply@example.com",
+	}, svc)
+	if result.err != nil {
+		t.Fatalf("Execute: %v", result.err)
 	}
-	newGmailService = func(context.Context, string) (*gmail.Service, error) { return svc, nil }
-
-	_ = captureStdout(t, func() {
-		_ = captureStderr(t, func() {
-			if err := Execute([]string{
-				"--json",
-				"--account", "a@b.com",
-				"gmail", "send",
-				"--to", "x@y.com",
-				"--subject", "S",
-				"--body", "B",
-				"--reply-to", "reply@example.com",
-			}); err != nil {
-				t.Fatalf("Execute: %v", err)
-			}
-		})
-	})
 }
 
 func TestExecute_GmailSend_ReplyToMessageID(t *testing.T) {
-	origNew := newGmailService
-	t.Cleanup(func() { newGmailService = origNew })
-
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch {
 		case r.Method == http.MethodGet && strings.Contains(r.URL.Path, "/gmail/v1/users/me/messages/m0"):
@@ -91,6 +71,7 @@ func TestExecute_GmailSend_ReplyToMessageID(t *testing.T) {
 					"headers": []map[string]any{
 						{"name": "Message-ID", "value": "<orig@id>"},
 						{"name": "References", "value": "<ref0>"},
+						{"name": "Subject", "value": "Original Subject"},
 					},
 				},
 			})
@@ -118,6 +99,9 @@ func TestExecute_GmailSend_ReplyToMessageID(t *testing.T) {
 			if !strings.Contains(s, "References: <ref0> <orig@id>\r\n") {
 				t.Fatalf("missing References in raw:\n%s", s)
 			}
+			if !strings.Contains(s, "Subject: Re: Original Subject\r\n") {
+				t.Fatalf("missing inherited reply subject in raw:\n%s", s)
+			}
 			w.Header().Set("Content-Type", "application/json")
 			_ = json.NewEncoder(w).Encode(map[string]any{"id": "s1", "threadId": "t0"})
 			return
@@ -128,37 +112,21 @@ func TestExecute_GmailSend_ReplyToMessageID(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	svc, err := gmail.NewService(context.Background(),
-		option.WithoutAuthentication(),
-		option.WithHTTPClient(srv.Client()),
-		option.WithEndpoint(srv.URL+"/"),
-	)
-	if err != nil {
-		t.Fatalf("NewService: %v", err)
+	svc := newGmailServiceFromServer(t, srv)
+	result := executeWithGmailTestService(t, []string{
+		"--json",
+		"--account", "a@b.com",
+		"gmail", "send",
+		"--to", "x@y.com",
+		"--body", "B",
+		"--reply-to-message-id", "m0",
+	}, svc)
+	if result.err != nil {
+		t.Fatalf("Execute: %v", result.err)
 	}
-	newGmailService = func(context.Context, string) (*gmail.Service, error) { return svc, nil }
-
-	_ = captureStdout(t, func() {
-		_ = captureStderr(t, func() {
-			if err := Execute([]string{
-				"--json",
-				"--account", "a@b.com",
-				"gmail", "send",
-				"--to", "x@y.com",
-				"--subject", "S",
-				"--body", "B",
-				"--reply-to-message-id", "m0",
-			}); err != nil {
-				t.Fatalf("Execute: %v", err)
-			}
-		})
-	})
 }
 
 func TestExecute_GmailDraftsCreate_ReplyToMessageID(t *testing.T) {
-	origNew := newGmailService
-	t.Cleanup(func() { newGmailService = origNew })
-
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch {
 		case r.Method == http.MethodGet && strings.Contains(r.URL.Path, "/gmail/v1/users/me/messages/m0"):
@@ -170,6 +138,7 @@ func TestExecute_GmailDraftsCreate_ReplyToMessageID(t *testing.T) {
 					"headers": []map[string]any{
 						{"name": "Message-ID", "value": "<orig@id>"},
 						{"name": "References", "value": "<ref0>"},
+						{"name": "Subject", "value": "Original Subject"},
 					},
 				},
 			})
@@ -200,6 +169,9 @@ func TestExecute_GmailDraftsCreate_ReplyToMessageID(t *testing.T) {
 			if !strings.Contains(s, "References: <ref0> <orig@id>\r\n") {
 				t.Fatalf("missing References in raw:\n%s", s)
 			}
+			if !strings.Contains(s, "Subject: Re: Original Subject\r\n") {
+				t.Fatalf("missing auto reply subject in raw:\n%s", s)
+			}
 			w.Header().Set("Content-Type", "application/json")
 			_ = json.NewEncoder(w).Encode(map[string]any{
 				"id":      "d1",
@@ -213,29 +185,16 @@ func TestExecute_GmailDraftsCreate_ReplyToMessageID(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	svc, err := gmail.NewService(context.Background(),
-		option.WithoutAuthentication(),
-		option.WithHTTPClient(srv.Client()),
-		option.WithEndpoint(srv.URL+"/"),
-	)
-	if err != nil {
-		t.Fatalf("NewService: %v", err)
+	svc := newGmailServiceFromServer(t, srv)
+	result := executeWithGmailTestService(t, []string{
+		"--json",
+		"--account", "a@b.com",
+		"gmail", "drafts", "create",
+		"--to", "x@y.com",
+		"--body", "B",
+		"--reply-to-message-id", "m0",
+	}, svc)
+	if result.err != nil {
+		t.Fatalf("Execute: %v", result.err)
 	}
-	newGmailService = func(context.Context, string) (*gmail.Service, error) { return svc, nil }
-
-	_ = captureStdout(t, func() {
-		_ = captureStderr(t, func() {
-			if err := Execute([]string{
-				"--json",
-				"--account", "a@b.com",
-				"gmail", "drafts", "create",
-				"--to", "x@y.com",
-				"--subject", "S",
-				"--body", "B",
-				"--reply-to-message-id", "m0",
-			}); err != nil {
-				t.Fatalf("Execute: %v", err)
-			}
-		})
-	})
 }

@@ -15,13 +15,9 @@ import (
 )
 
 func TestGmailWatchServer_ServeHTTP_ExcludeLabels_SkipsHook(t *testing.T) {
-	home := t.TempDir()
-	t.Setenv("HOME", home)
+	setWatchTestConfigHome(t)
 
-	store, err := newGmailWatchStore("a@b.com")
-	if err != nil {
-		t.Fatalf("store: %v", err)
-	}
+	store := newGmailWatchTestStore(t, "a@b.com")
 	// Seed state so StartHistoryID returns non-zero.
 	if updateErr := store.Update(func(s *gmailWatchState) error {
 		s.Account = "a@b.com"
@@ -100,7 +96,7 @@ func TestGmailWatchServer_ServeHTTP_ExcludeLabels_SkipsHook(t *testing.T) {
 	push.Message.Data = base64.StdEncoding.EncodeToString([]byte(`{"emailAddress":"a@b.com","historyId":"200"}`))
 	body, _ := json.Marshal(push)
 
-	req := httptest.NewRequest(http.MethodPost, "/gmail-pubsub?token=tok", bytes.NewReader(body))
+	req := httptest.NewRequestWithContext(context.Background(), http.MethodPost, "/gmail-pubsub?token=tok", bytes.NewReader(body))
 	rr := httptest.NewRecorder()
 	s.ServeHTTP(rr, req)
 
@@ -118,11 +114,11 @@ func TestGmailWatchServer_ServeHTTP_ExcludeLabels_SkipsHook(t *testing.T) {
 }
 
 func TestGmailWatchServer_isExcludedLabel_CaseSensitive(t *testing.T) {
-	s := &gmailWatchServer{excludeLabelIDs: map[string]struct{}{"Label_ABC": {}}}
-	if !s.isExcludedLabel([]string{"Label_ABC"}) {
+	labels := map[string]struct{}{"Label_ABC": {}}
+	if !labelSetContains(labels, []string{"Label_ABC"}) {
 		t.Fatalf("expected exact case label to match")
 	}
-	if s.isExcludedLabel([]string{"label_abc"}) {
+	if labelSetContains(labels, []string{"label_abc"}) {
 		t.Fatalf("expected case-mismatched label not to match")
 	}
 }

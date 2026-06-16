@@ -41,23 +41,19 @@ func loginKeychainPath() string {
 	return filepath.Join(home, "Library", "Keychains", "login.keychain-db")
 }
 
-// CheckKeychainLocked checks if the login keychain is locked.
-// Returns true if locked, false if unlocked or on error detecting status.
-func CheckKeychainLocked() bool {
+func checkKeychainLocked(ctx context.Context) bool {
 	path := loginKeychainPath()
 	if path == "" {
 		return false
 	}
 
-	cmd := exec.CommandContext(context.Background(), "security", "show-keychain-info", path) //nolint:gosec // path is from os.UserHomeDir, not user input
+	cmd := exec.CommandContext(ctx, "security", "show-keychain-info", path) //nolint:gosec // path is from os.UserHomeDir, not user input
 	err := cmd.Run()
 	// Exit code 0 = unlocked, non-zero = locked or error
 	return err != nil
 }
 
-// UnlockKeychain prompts for password and unlocks the login keychain.
-// Returns nil on success, error on failure.
-func UnlockKeychain() error {
+func unlockKeychain(ctx context.Context) error {
 	path := loginKeychainPath()
 	if path == "" {
 		return errKeychainPathUnknown
@@ -79,7 +75,7 @@ func UnlockKeychain() error {
 	}
 
 	// Pass password via stdin to avoid exposing it in process list (ps aux)
-	cmd := exec.CommandContext(context.Background(), "security", "unlock-keychain", path) //nolint:gosec // path is from os.UserHomeDir
+	cmd := exec.CommandContext(ctx, "security", "unlock-keychain", path) //nolint:gosec // path is from os.UserHomeDir
 	cmd.Stdin = strings.NewReader(string(password) + "\n")
 
 	if err := cmd.Run(); err != nil {
@@ -89,13 +85,10 @@ func UnlockKeychain() error {
 	return nil
 }
 
-// EnsureKeychainAccess checks if the keychain is accessible and unlocks it if needed.
-// Returns nil if keychain is accessible (unlocked or successfully unlocked).
-// Returns error if keychain cannot be unlocked.
-func EnsureKeychainAccess() error {
-	if !CheckKeychainLocked() {
+func EnsureKeychainAccessContext(ctx context.Context) error {
+	if !checkKeychainLocked(ctx) {
 		return nil
 	}
 
-	return UnlockKeychain()
+	return unlockKeychain(ctx)
 }
